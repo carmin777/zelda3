@@ -32,6 +32,16 @@ enum {
   kKeys_WindowSmaller,
   kKeys_DisplayPerf,
   kKeys_ToggleRenderer,
+  kKeys_ToggleVoxel,
+  kKeys_VoxelCameraLeft,
+  kKeys_VoxelCameraRight,
+  kKeys_VoxelCameraUp,
+  kKeys_VoxelCameraDown,
+  kKeys_VoxelCameraZoomIn,
+  kKeys_VoxelCameraZoomOut,
+  kKeys_VoxelCameraReset,
+  kKeys_VoxelShadows,
+  kKeys_VoxelLighting,
   kKeys_VolumeUp,
   kKeys_VolumeDown,
   kKeys_Total,
@@ -62,12 +72,34 @@ typedef struct Config {
   uint8 extended_aspect_ratio;
   bool extend_y;
   bool no_sprite_limits;
+  bool frame_description;
+  const char *render_plugin;
   bool display_perf_title;
   uint8 enable_msu;
   bool resume_msu;
   bool disable_frame_delay;
   uint8 msuvolume;
   uint32 features0;
+  bool mods_enabled;
+  const char *mods_directory;
+  uint64 lua_instruction_limit;
+  uint32 lua_memory_mb;
+  bool nwa_enabled;
+  uint16 nwa_port;
+  bool nwa_allow_write;
+  bool coop_enabled;
+  bool coop_local;
+  bool coop_local_vertical;
+  bool coop_shared_world;
+  const char *coop_server;
+  uint16 coop_port;
+  const char *coop_group;
+  const char *coop_player_name;
+  const char *coop_player_name2;
+  uint16 coop_player_color;
+  uint16 coop_player_color2;
+  bool coop_show_names;
+  bool coop_race_mode;
 
   const char *link_graphics;
   char *memory_buffer;
@@ -107,4 +139,6 @@ extern Config g_config;
 
 void ParseConfigFile(const char *filename);
 int FindCmdForSdlKey(SDL_Keycode code, SDL_Keymod mod);
+int FindCmdForSdlKey2(SDL_Keycode code, SDL_Keymod mod);
 int FindCmdForGamepadButton(int button, uint32 modifiers);
+int FindCmdForGamepadButton2(int button, uint32 modifiers);

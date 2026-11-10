@@ -1,6 +1,7 @@
 #include "zelda_rtl.h"
 #include "variables.h"
 #include "misc.h"
+#include "hud.h"
 #include "nmi.h"
 #include "poly.h"
 #include "attract.h"
@@ -11,6 +12,15 @@
 #include "util.h"
 #include "audio.h"
 #include "assets.h"
+#include "mod/coop.h"
+#include "mod/mods.h"
+#include "mod/events.h"
+#include "mod/mod_features.h"
+#include "mod/nwa_server.h"
+#include "mod/shared_world.h"
+#include "mod/frame_desc.h"
+#include "mod/frame_desc_capture.h"
+#include "zelda_cpu_infra.h"
 ZeldaEnv g_zenv;
 uint8 g_ram[131072];
 
@@ -27,7 +37,8 @@ typedef struct SimpleHdma {
   uint8 indir_bank;
 } SimpleHdma;
 static void SimpleHdma_Init(SimpleHdma *c, DmaChannel *dc);
-static void SimpleHdma_DoLine(SimpleHdma *c);
+static void SimpleHdma_DoLine(SimpleHdma *c, FrameDesc *cap, int line,
+                              uint8 source);
 
 static const uint8 bAdrOffsets[8][4] = {
   {0, 0, 0, 0},
@@ -89,11 +100,11 @@ static const uint8 *SimpleHdma_GetPtr(uint32 p) {
   case 0xade07: return (uint8*)kMapMode_Zooms1 + 0xe0;
   case 0xadee7: return (uint8*)kMapMode_Zooms2;
   case 0xadfc7: return (uint8*)kMapMode_Zooms2 + 0xe0;
-  case 0x600: return &g_ram[0x600];
-  case 0x602: return &g_ram[0x602];
-  case 0x604: return &g_ram[0x604];
-  case 0x606: return &g_ram[0x606];
-  case 0xe2: return &g_ram[0xe2];
+  case 0x600: return (uint8 *)&ow_scroll_vars0;
+  case 0x602: return (uint8 *)&ow_scroll_vars0 + 2;
+  case 0x604: return (uint8 *)&ow_scroll_vars0 + 4;
+  case 0x606: return (uint8 *)&ow_scroll_vars0 + 6;
+  case 0xe2: return (uint8 *)&BG2HOFS_copy2;
   default:
     assert(0);
     return NULL;
@@ -112,7 +123,8 @@ static void SimpleHdma_Init(SimpleHdma *c, DmaChannel *dc) {
   c->indir_bank = dc->indBank;
 }
 
-static void SimpleHdma_DoLine(SimpleHdma *c) {
+static void SimpleHdma_DoLine(SimpleHdma *c, FrameDesc *cap, int line,
+                              uint8 source) {
   if (c->table == NULL)
     return;
   bool do_transfer = false;
@@ -131,7 +143,10 @@ static void SimpleHdma_DoLine(SimpleHdma *c) {
   if(do_transfer || c->rep_count & 0x80) {
     for(int j = 0, j_end = transferLength[c->mode & 7]; j < j_end; j++) {
       uint8 v = c->mode & 0x40 ? *c->indir_ptr++ : *c->table++;
-      zelda_ppu_write(0x2100 + c->ppu_addr + bAdrOffsets[c->mode & 7][j], v);
+      uint16 adr = 0x2100 + c->ppu_addr + bAdrOffsets[c->mode & 7][j];
+      zelda_ppu_write(adr, v);
+      if (cap != NULL)
+        FrameDesc_RecordRegister(cap, line, adr, v, source);
     }
   }
   c->rep_count--;
@@ -199,21 +214,44 @@ void ZeldaDrawPpuFrame(uint8 *pixel_buffer, size_t pitch, uint32 render_flags) {
 
   int height = render_flags & kPpuRenderFlags_Height240 ? 240 : 224;
 
+  FrameDesc *cap = FrameDesc_CaptureEnabled() ? FrameDesc_Active() : NULL;
+  if (cap != NULL)
+    FrameDesc_BeginCapture(cap, g_zenv.ppu, render_flags,
+                           256 + g_zenv.ppu->extraLeftRight * 2, height);
+
   for (int i = 0; i <= height; i++) {
-    if (i == 128 && irq_flag) {
+    // The 24-slot menu uses the lower half of the BG2 tilemap. A replay
+    // snapshot may still carry the file-select IRQ flag; do not apply that
+    // split while the expanded menu is open, or rows below 128 disappear.
+    bool menu_irq_split = main_module_index == 14 &&
+                          (g_wanted_zelda_features & kFeatures0_NewStyleInventory) != 0;
+    if (i == 128 && irq_flag && !menu_irq_split) {
       zelda_ppu_write(BG3HOFS, selectfile_var8);
       zelda_ppu_write(BG3HOFS, selectfile_var8 >> 8);
       zelda_ppu_write(BG3VOFS, 0);
       zelda_ppu_write(BG3VOFS, 0);
+      if (cap != NULL) {
+        FrameDesc_RecordRegister(cap, 128, BG3HOFS, selectfile_var8,
+                                 kFrameDescChange_Irq);
+        FrameDesc_RecordRegister(cap, 128, BG3HOFS, selectfile_var8 >> 8,
+                                 kFrameDescChange_Irq);
+        FrameDesc_RecordRegister(cap, 128, BG3VOFS, 0,
+                                 kFrameDescChange_Irq);
+        FrameDesc_RecordRegister(cap, 128, BG3VOFS, 0,
+                                 kFrameDescChange_Irq);
+      }
       if (irq_flag & 0x80) {
         irq_flag = 0;
         zelda_snes_dummy_write(NMITIMEN, 0x81);
       }
     }
     ppu_runLine(g_zenv.ppu, i);
-    SimpleHdma_DoLine(&hdma_chans[0]);
-    SimpleHdma_DoLine(&hdma_chans[1]);
+    SimpleHdma_DoLine(&hdma_chans[0], cap, i + 1, kFrameDescChange_Hdma6);
+    SimpleHdma_DoLine(&hdma_chans[1], cap, i + 1, kFrameDescChange_Hdma7);
   }
+
+  if (cap != NULL)
+    FrameDesc_EndCapture(cap);
 }
 
 void HdmaSetup(uint32 addr6, uint32 addr7, uint8 transfer_unit, uint8 reg6, uint8 reg7, uint8 indirect_bank) {
@@ -247,6 +285,20 @@ static void ZeldaInitializationCode() {
   dma_source_addr_9 = 0xb280;
   dma_source_addr_14 = 0xb280 + 0x60;
   zelda_snes_dummy_write(NMITIMEN, 0x81);
+
+  if (EmuSeedRomActive()) {
+    // z3randomizer init ($A1:FF3A..FF84) runs after the vanilla init and
+    // before the first main-loop iteration. It stamps the ROM version in
+    // SRAM, publishes the default OneMind/network id and sets the player
+    // sprite bank.
+    uint32 version = EmuSeedRomVersion();
+    g_zenv.sram[0x1ffc] = (uint8)version;
+    g_zenv.sram[0x1ffd] = (uint8)(version >> 8);
+    g_zenv.sram[0x1ffe] = (uint8)(version >> 16);  // srm_var1 becomes 4
+    g_zenv.sram[0x1fff] = (uint8)(version >> 24);
+    g_ram[0x15072] = 1;   // OneMindId ($7F5072)
+    g_ram[0xBC] = 0x10;   // PlayerSpriteBank ($7E00BC)
+  }
 }
 
 static void ClearOamBuffer() {  // 80841e
@@ -258,15 +310,27 @@ static void ZeldaRunGameLoop() {
   frame_counter++;
   ClearOamBuffer();
   Module_MainRouting();
+  if (EmuSeedRomActive()) {
+    // z3randomizer FrameHookAction wraps Module_MainRouting: the original
+    // call runs first, then the 32-bit LoopFrames counter ($7EF42E) is
+    // incremented. Some file-select init paths clear it, so the order matters.
+    uint32 t = (uint32)g_ram[0xf42e] | (uint32)g_ram[0xf42f] << 8 |
+               (uint32)g_ram[0xf430] << 16 | (uint32)g_ram[0xf431] << 24;
+    t++;
+    g_ram[0xf42e] = (uint8)t;
+    g_ram[0xf42f] = (uint8)(t >> 8);
+    g_ram[0xf430] = (uint8)(t >> 16);
+    g_ram[0xf431] = (uint8)(t >> 24);
+  }
   NMI_PrepareSprites();
   nmi_boolean = 0;
 }
 
 void ZeldaInitialize() {
   g_zenv.dma = dma_init(NULL);
-  g_zenv.ppu = ppu_init();
+  g_zenv.ppu = ppu_init(NULL);
   g_zenv.ram = g_ram;
-  g_zenv.sram = (uint8*)calloc(8192, 1);
+  g_zenv.sram = (uint8*)calloc(0x8000, 1);
   g_zenv.vram = g_zenv.ppu->vram;
   g_zenv.player = SpcPlayer_Create();
   SpcPlayer_Initialize(g_zenv.player);
@@ -283,14 +347,40 @@ static void ZeldaRunPolyLoop() {
 }
 
 void ZeldaRunFrameInternal(uint16 input, int run_what) {
+  uint8 prev_module = 0;
+  uint8 prev_world = 0;
+  bool track_module = (g_mod_event_mask & (1u << kModEv_ModuleChange)) != 0;
+  bool track_world = (g_mod_event_mask & (1u << kModEv_WorldChange)) != 0;
+  if (track_module)
+    prev_module = main_module_index;
+  if (track_world)
+    prev_world = savegame_is_darkworld;
+
   if (animated_tile_data_src == 0)
     ZeldaInitializationCode();
 
+  MOD_EMIT(kModEv_FrameStart, 0, 0, 0);
+
   if (run_what & 2)
     ZeldaRunPolyLoop();
-  if (run_what & 1)
+  if (run_what & 1) {
+    SharedWorld_PreFrame();
     ZeldaRunGameLoop();
+    SharedWorld_FrameStep();
+    SharedWorld_UpdateHud();
+  }
   Interrupt_NMI(input);
+
+  if (track_module && main_module_index != prev_module)
+    MOD_EMIT(kModEv_ModuleChange, main_module_index, prev_module, 0);
+  if (track_world) {
+    int world = (savegame_is_darkworld & 0x40) != 0;
+    int prev = (prev_world & 0x40) != 0;
+    if (world != prev)
+      MOD_EMIT(kModEv_WorldChange, world, prev, 0);
+  }
+
+  MOD_EMIT(kModEv_FrameEnd, 0, 0, 0);
 }
 
 
@@ -304,11 +394,22 @@ int frame_ctr_dbg;
 static uint8 *g_emu_memory_ptr;
 static ZeldaRunFrameFunc *g_emu_runframe;
 static ZeldaSyncAllFunc *g_emu_syncall;
+static uint8 *g_emu_memory_ptr_saved;
+static ZeldaRunFrameFunc *g_emu_runframe_saved;
+static ZeldaSyncAllFunc *g_emu_syncall_saved;
 
 void ZeldaSetupEmuCallbacks(uint8 *emu_ram, ZeldaRunFrameFunc *func, ZeldaSyncAllFunc *sync_all) {
-  g_emu_memory_ptr = emu_ram;
-  g_emu_runframe = func;
-  g_emu_syncall = sync_all;
+  g_emu_memory_ptr = g_emu_memory_ptr_saved = emu_ram;
+  g_emu_runframe = g_emu_runframe_saved = func;
+  g_emu_syncall = g_emu_syncall_saved = sync_all;
+}
+
+void ZeldaSetEmuOracleEnabled(bool enabled) {
+  if (g_emu_runframe_saved == NULL)
+    return;
+  g_emu_memory_ptr = enabled ? g_emu_memory_ptr_saved : NULL;
+  g_emu_runframe = enabled ? g_emu_runframe_saved : NULL;
+  g_emu_syncall = enabled ? g_emu_syncall_saved : NULL;
 }
 
 static void EmuSynchronizeWholeState() {
@@ -326,7 +427,7 @@ static void EmuSyncMemoryRegion(void *ptr, size_t n) {
 }
 
 static void Startup_InitializeMemory() {  // 8087c0
-  memset(g_ram + 0x0, 0, 0x2000);
+  memset(g_ram, 0, 0x2000);
   main_palette_buffer[0] = 0;
   srm_var1 = 0;
   uint8 *sram = g_zenv.sram;
@@ -425,7 +526,12 @@ typedef struct StateRecorder {
   ByteArray base_snapshot;
 } StateRecorder;
 
-static StateRecorder state_recorder;
+static StateRecorder g_state_recorders[2];
+static StateRecorder *g_state_recorder = &g_state_recorders[0];
+
+void ZeldaSelectStateRecorder(int slot) {
+  g_state_recorder = &g_state_recorders[slot & 1];
+}
 
 void StateRecorder_Init(StateRecorder *sr) {
   memset(sr, 0, sizeof(*sr));
@@ -525,8 +631,24 @@ void StateRecorder_Load(StateRecorder *sr, FILE *f, bool replay_mode) {
     ReadFromFile(f, arr.data, arr.size);
     LoadFuncState state = { arr.data, arr.data + arr.size };
     LoadSnesState(&loadFunc, &state);
-    ByteArray_Destroy(&arr);
     assert(state.p == state.pend);
+    if (!sr->replay_mode) {
+      // Loading a state starts a new recording at that state. Keep the state
+      // bytes (already in SaveSnesState format) as the base snapshot and drop
+      // the loaded file's input log; otherwise a replay saved after this load
+      // would append new input to an unrelated history and not match.
+      ByteArray_Destroy(&sr->log);
+      memset(&sr->log, 0, sizeof(sr->log));
+      ByteArray_Destroy(&sr->base_snapshot);
+      sr->base_snapshot = arr;
+      memset(&arr, 0, sizeof(arr));
+      sr->last_inputs = 0;
+      sr->frames_since_last = 0;
+      sr->total_frames = 0;
+      sr->replay_pos = sr->replay_pos_last_complete = 0;
+      sr->replay_frame_counter = 0;
+    }
+    ByteArray_Destroy(&arr);
   }
 }
 
@@ -661,7 +783,7 @@ int InputStateReadFromFile() {
   char buf[64];
   char keys[64];
 
-  while (state_recorder.total_frames == next_ts) {
+  while (g_state_recorder->total_frames == next_ts) {
     cur_keys = next_keys;
     if (!f)
       f = fopen("boss_bug.txt", "r");
@@ -684,6 +806,26 @@ int InputStateReadFromFile() {
 }
 #endif
 
+void ZeldaApplyModFeatureOverrides(void) {
+  uint32 mask = ModFeatures_OverrideMask();
+  if (mask == 0)
+    return;
+  uint32 updated = (enhanced_features0 & ~mask) |
+                   (ModFeatures_OverrideValue() & mask);
+  if (updated == enhanced_features0)
+    return;
+  uint32 old = enhanced_features0;
+  enhanced_features0 = updated;
+  EmuSyncMemoryRegion(&enhanced_features0, sizeof(enhanced_features0));
+  // A replay/load snapshot brings the HUD it was saved with. Rebuild it when
+  // a mod changes a layout option, otherwise the old tilemap stays on screen
+  // until the next room transition.
+  if ((old ^ updated) & (kFeatures0_NewStyleInventory |
+                         kFeatures0_HorizontalMagicBar |
+                         kFeatures0_ReduxHud))
+    Hud_Rebuild();
+}
+
 bool ZeldaRunFrame(int inputs) {
 
   // Avoid up/down and left/right from being pressed at the same time
@@ -692,42 +834,45 @@ bool ZeldaRunFrame(int inputs) {
 
   frame_ctr_dbg++;
 
-  bool is_replay = state_recorder.replay_mode;
+  bool is_replay = g_state_recorder->replay_mode;
 
   // Either copy state or apply state
   if (is_replay) {
-    inputs = StateRecorder_ReadNextReplayState(&state_recorder);
+    inputs = StateRecorder_ReadNextReplayState(g_state_recorder);
+    // A replay snapshot carries its own features0. While a mod is active its
+    // explicit feature values still win, so a replay can exercise them.
+    ZeldaApplyModFeatureOverrides();
   } else {
     //    input_state = InputStateReadFromFile();
-    StateRecorder_Record(&state_recorder, inputs);
+    StateRecorder_Record(g_state_recorder, inputs);
 
     // This is whether APUI00 is true or false, this is used by the ancilla code.
-    uint8 apui00 = ZeldaIsMusicPlaying();
-    if (apui00 != g_ram[kRam_APUI00]) {
-      g_ram[kRam_APUI00] = apui00;
-      EmuSyncMemoryRegion(&g_ram[kRam_APUI00], 1);
-      StateRecorder_RecordPatchByte(&state_recorder, 0x648, &apui00, 1);
+    uint8 apu_music_playing = ZeldaIsMusicPlaying();
+    if (apu_music_playing != apui00) {
+      apui00 = apu_music_playing;
+      EmuSyncMemoryRegion(&apui00, 1);
+      StateRecorder_RecordPatchByte(g_state_recorder, 0x648, &apu_music_playing, 1);
     }
 
     if (animated_tile_data_src != 0) {
       // Whenever we're no longer replaying, we'll remember what bugs were fixed,
       // but only if game is initialized.
-      if (g_ram[kRam_BugsFixed] < kBugFix_Latest) {
-        g_ram[kRam_BugsFixed] = kBugFix_Latest;
-        EmuSyncMemoryRegion(&g_ram[kRam_BugsFixed], 1);
-        StateRecorder_RecordPatchByte(&state_recorder, kRam_BugsFixed, &g_ram[kRam_BugsFixed], 1);
+      if (bugs_fixed < kBugFix_Latest) {
+        bugs_fixed = kBugFix_Latest;
+        EmuSyncMemoryRegion(&bugs_fixed, 1);
+        StateRecorder_RecordPatchByte(g_state_recorder, kRam_BugsFixed, &bugs_fixed, 1);
       }
 
       if (enhanced_features0 != g_wanted_zelda_features) {
         enhanced_features0 = g_wanted_zelda_features;
         EmuSyncMemoryRegion(&enhanced_features0, sizeof(enhanced_features0));
-        StateRecorder_RecordPatchByte(&state_recorder, kRam_Features0, (uint8 *)&enhanced_features0, 4);
+        StateRecorder_RecordPatchByte(g_state_recorder, kRam_Features0, (uint8 *)&enhanced_features0, 4);
       }
     }
   }
 
   int run_what;
-  if (g_ram[kRam_BugsFixed] < kBugFix_PolyRenderer) {
+  if (bugs_fixed < kBugFix_PolyRenderer) {
     // A previous version of this code alternated the game loop with
     // the poly renderer.
     run_what = (is_nmi_thread_active && thread_other_stack != 0x1f31) ? 2 : 1;
@@ -735,16 +880,21 @@ bool ZeldaRunFrame(int inputs) {
     // The snes seems to let poly rendering run for a little
     // while each fram until it eventually completes a frame.
     // Simulate this by rendering the poly every n:th frame.
-    run_what = (is_nmi_thread_active && IncrementCrystalCountdown(&g_ram[kRam_CrystalRotateCounter], virq_trigger)) ? 3 : 1;
-    EmuSyncMemoryRegion(&g_ram[kRam_CrystalRotateCounter], 1);
+    run_what = (is_nmi_thread_active && IncrementCrystalCountdown(&crystal_rotate_counter, virq_trigger)) ? 3 : 1;
+    EmuSyncMemoryRegion(&crystal_rotate_counter, 1);
   }
 
-  if (g_emu_runframe == NULL || enhanced_features0 != 0 || g_zenv.dialogue_flags) {
-    // can't compare against real impl when running with extra features.
+  if (g_emu_runframe == NULL || enhanced_features0 != 0 || g_zenv.dialogue_flags ||
+      g_mods_change_content || g_nwa_changed_content || g_coop_changed_content ||
+      SharedWorld_IsActive()) {
+    // can't compare against real impl when running with extra features or mods.
     ZeldaRunFrameInternal(inputs, run_what);
   } else {
     g_emu_runframe(inputs, run_what);
   }
+
+  if (enhanced_features0 & kFeatures0_MenuTimer)
+    Hud_TickMenuTimer();
 
   ZeldaPushApuState();
 
@@ -791,6 +941,63 @@ static const char *const kReferenceSaves[] = {
   "Chapter 13 - After Ganon's Tower.sav",
 };
 
+// Starts replaying a StateRecorder file (a .sav written by the game) from an
+// arbitrary path. Used by the headless bench for replays attached to issues.
+// Loads the final state of a .sav (like the in-game load key), without replay.
+bool ZeldaLoadFile(const char *path) {
+  FILE *f = fopen(path, "rb");
+  if (!f)
+    return false;
+  printf("*** Loading file %s\n", path);
+  StateRecorder_Load(g_state_recorder, f, false);
+  fclose(f);
+  return true;
+}
+
+// Writes the current StateRecorder (initial snapshot + input log) to a file.
+bool ZeldaSaveReplayFile(const char *path) {
+  FILE *f = fopen(path, "wb");
+  if (!f)
+    return false;
+  StateRecorder_Save(g_state_recorder, f);
+  fclose(f);
+  return true;
+}
+
+bool ZeldaReplayFile(const char *path) {
+  FILE *f = fopen(path, "rb");
+  if (!f)
+    return false;
+  printf("*** Replaying file %s\n", path);
+  StateRecorder_Load(g_state_recorder, f, true);
+  fclose(f);
+  return true;
+}
+
+static bool LoadReplayBase(FILE *f) {
+  StateRecorder_Load(g_state_recorder, f, true);
+  // StopReplay keeps the loaded base snapshot but leaves the recorder ready to
+  // accept fresh input.
+  StateRecorder_StopReplay(g_state_recorder);
+  return true;
+}
+
+bool ZeldaLoadReplayBaseFile(const char *path) {
+  FILE *f = fopen(path, "rb");
+  if (!f)
+    return false;
+  printf("*** Loading replay base %s\n", path);
+  bool ok = LoadReplayBase(f);
+  fclose(f);
+  return ok;
+}
+
+bool ZeldaLoadReplayBaseRef(int which) {
+  char name[128];
+  sprintf(name, "saves/ref/%s", kReferenceSaves[which]);
+  return ZeldaLoadReplayBaseFile(name);
+}
+
 void SaveLoadSlot(int cmd, int which) {
   char name[128];
   if (which & 256) {
@@ -806,9 +1013,9 @@ void SaveLoadSlot(int cmd, int which) {
       cmd == kSaveLoad_Save ? "Saving" : cmd == kSaveLoad_Load ? "Loading" : "Replaying", which);
 
     if (cmd != kSaveLoad_Save)
-      StateRecorder_Load(&state_recorder, f, cmd == kSaveLoad_Replay);
+      StateRecorder_Load(g_state_recorder, f, cmd == kSaveLoad_Replay);
     else
-      StateRecorder_Save(&state_recorder, f);
+      StateRecorder_Save(g_state_recorder, f);
 
     fclose(f);
   }
@@ -827,7 +1034,7 @@ void StateRecoderMultiPatch_Init(StateRecoderMultiPatch *mp) {
 
 void StateRecoderMultiPatch_Commit(StateRecoderMultiPatch *mp) {
   if (mp->count)
-    StateRecorder_RecordPatchByte(&state_recorder, mp->addr, mp->vals, mp->count);
+    StateRecorder_RecordPatchByte(g_state_recorder, mp->addr, mp->vals, mp->count);
 }
 
 void StateRecoderMultiPatch_Patch(StateRecoderMultiPatch *mp, uint32 addr, uint8 value) {
@@ -839,6 +1046,76 @@ void StateRecoderMultiPatch_Patch(StateRecoderMultiPatch *mp, uint32 addr, uint8
   mp->vals[mp->count++] = value;
   g_ram[addr] = value;
   EmuSyncMemoryRegion(&g_ram[addr], 1);
+}
+
+static void PatchSpriteByte(StateRecoderMultiPatch *mp, uint8 *p, uint8 value) {
+  StateRecoderMultiPatch_Patch(mp, (uint32)(p - g_ram), value);
+}
+
+// Test hook used by --force-sprite6b. Puts a CannonTrooper (type 0x6B) into a
+// free sprite slot in both the C state and the emulator. It records the raw
+// bytes in the replay log, so a saved replay reproduces the spawn without the
+// command line option.
+static void ForceCannonTrooperSpawn(StateRecoderMultiPatch *mp) {
+  int j = 15;
+  while (j >= 0 && sprite_state[j] != 0)
+    j--;
+  if (j < 0)
+    return;
+
+  uint16 x = link_x_coord;
+  uint16 y = link_y_coord + 32;
+  PatchSpriteByte(mp, sprite_state + j, 9);
+  PatchSpriteByte(mp, sprite_type + j, 0x6B);
+  PatchSpriteByte(mp, sprite_x_lo + j, x);
+  PatchSpriteByte(mp, sprite_x_hi + j, x >> 8);
+  PatchSpriteByte(mp, sprite_y_lo + j, y);
+  PatchSpriteByte(mp, sprite_y_hi + j, y >> 8);
+  PatchSpriteByte(mp, sprite_x_subpixel + j, 0);
+  PatchSpriteByte(mp, sprite_y_subpixel + j, 0);
+  PatchSpriteByte(mp, sprite_x_vel + j, 0);
+  PatchSpriteByte(mp, sprite_y_vel + j, 0);
+  PatchSpriteByte(mp, sprite_z + j, 0);
+  PatchSpriteByte(mp, sprite_z_vel + j, 0);
+  PatchSpriteByte(mp, sprite_z_subpos + j, 0);
+  PatchSpriteByte(mp, sprite_ai_state + j, 0);
+  PatchSpriteByte(mp, sprite_A + j, 0);
+  PatchSpriteByte(mp, sprite_B + j, 0);
+  PatchSpriteByte(mp, sprite_C + j, 0);
+  PatchSpriteByte(mp, sprite_D + j, 0);
+  PatchSpriteByte(mp, sprite_graphics + j, 0);
+  PatchSpriteByte(mp, sprite_delay_main + j, 0);
+  PatchSpriteByte(mp, sprite_delay_aux1 + j, 0);
+  PatchSpriteByte(mp, sprite_delay_aux2 + j, 0);
+  PatchSpriteByte(mp, sprite_delay_aux3 + j, 0);
+  PatchSpriteByte(mp, sprite_delay_aux4 + j, 0);
+  PatchSpriteByte(mp, sprite_flags2 + j, 4);
+  PatchSpriteByte(mp, sprite_health + j, 3);
+  PatchSpriteByte(mp, sprite_flags3 + j, 9);
+  PatchSpriteByte(mp, sprite_flags4 + j, 0x12);
+  PatchSpriteByte(mp, sprite_flags5 + j, 0x91);
+  PatchSpriteByte(mp, sprite_defl_bits + j, 8);
+  PatchSpriteByte(mp, sprite_bump_damage + j, 1);
+  PatchSpriteByte(mp, sprite_flags + j, 0x60);
+  PatchSpriteByte(mp, sprite_oam_flags + j, 9);
+  PatchSpriteByte(mp, sprite_obj_prio + j, 0);
+  PatchSpriteByte(mp, sprite_ignore_projectile + j, 0);
+  PatchSpriteByte(mp, sprite_head_dir + j, 0);
+  PatchSpriteByte(mp, sprite_anim_clock + j, 0);
+  PatchSpriteByte(mp, sprite_G + j, 0);
+  PatchSpriteByte(mp, sprite_hit_timer + j, 0);
+  PatchSpriteByte(mp, sprite_wallcoll + j, 0);
+  PatchSpriteByte(mp, sprite_F + j, 0);
+  PatchSpriteByte(mp, sprite_x_recoil + j, 0);
+  PatchSpriteByte(mp, sprite_y_recoil + j, 0);
+  PatchSpriteByte(mp, sprite_subtype2 + j, 0);
+  PatchSpriteByte(mp, sprite_floor + j, link_is_on_lower_level);
+  PatchSpriteByte(mp, sprite_room + j, player_is_indoors ? dungeon_room_index2 : overworld_area_index);
+  PatchSpriteByte(mp, sprite_die_action + j, 0);
+  PatchSpriteByte(mp, sprite_subtype + j, 0);
+  PatchSpriteByte(mp, sprite_N + j, 0xff);
+  PatchSpriteByte(mp, sprite_stunned + j, 0);
+  PatchSpriteByte(mp, sprite_give_damage + j, 0);
 }
 
 void PatchCommand(char c) {
@@ -856,13 +1133,15 @@ void PatchCommand(char c) {
     StateRecoderMultiPatch_Patch(&mp, 0xf360, rupees);  // link_rupees_goal
     StateRecoderMultiPatch_Patch(&mp, 0xf361, rupees >> 8);  // link_rupees_goal
   } else if (c == 'k') {
-    StateRecorder_ClearKeyLog(&state_recorder);
+    StateRecorder_ClearKeyLog(g_state_recorder);
   } else if (c == 'o') {
     StateRecoderMultiPatch_Patch(&mp, 0xf36f, 1);
   } else if (c == 'l') {
-    StateRecorder_StopReplay(&state_recorder);
+    StateRecorder_StopReplay(g_state_recorder);
   } else if (c == 'E') {
-    StateRecoderMultiPatch_Patch(&mp, 0x37f, g_ram[0x37f] ^ 1);
+    StateRecoderMultiPatch_Patch(&mp, 0x37f, cheatWalkThroughWalls ^ 1);
+  } else if (c == 'C') {
+    ForceCannonTrooperSpawn(&mp);
   }
   StateRecoderMultiPatch_Commit(&mp);
 }

@@ -1,0 +1,9 @@
+{
+  "id": "redux-ganchos",
+  "name": "Ganchos do Redux (exemplo F4e.1)",
+  "version": "1.0.0",
+  "api": 1,
+  "enabled": true,
+  "priority": 0,
+  "script": "main.lua"
+}

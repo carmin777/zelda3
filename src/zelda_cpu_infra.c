@@ -10,6 +10,13 @@
 #include "snes/cpu.h"
 #include "snes/cart.h"
 #include "snes/tracing.h"
+#include "mod/seed_rom_patches.h"
+
+#include <stdlib.h>
+
+// Set by --headless in main.c. A mismatch must terminate the regression run
+// instead of entering the retry loop below.
+extern bool g_headless;
 
 Snes *g_snes;
 Cpu *g_cpu;
@@ -32,7 +39,7 @@ typedef struct Snapshot {
   uint8 k, db, flags;
   uint8 ram[0x20000];
   uint16 vram[0x8000];
-  uint16 sram[0x2000];
+  uint8 sram[0x8000];  // seed ROMs may advertise 32 KB of SRAM
 } Snapshot;
 
 static Snapshot g_snapshot_mine, g_snapshot_theirs, g_snapshot_before;
@@ -44,7 +51,10 @@ static void MakeSnapshot(Snapshot *s) {
   s->pc = c->pc, s->k = c->k;
   s->flags = cpu_getFlags(c);
   memcpy(s->ram, g_snes->ram, 0x20000);
-  memcpy(s->sram, g_snes->cart->ram, g_snes->cart->ramSize);
+  size_t sram_size = g_snes->cart->ramSize;
+  if (sram_size > sizeof(s->sram))
+    sram_size = sizeof(s->sram);
+  memcpy(s->sram, g_snes->cart->ram, sram_size);
   memcpy(s->vram, g_snes->ppu->vram, sizeof(uint16) * 0x8000);
   memcpy(s->ram + 0x1DBA0, s->ram + 0x1B00, 224 * 2);  // hdma_table (partial)
 }
@@ -70,11 +80,21 @@ static void RestoreSnapshot(Snapshot *s) {
   c->pc = s->pc, c->k = s->k;
   cpu_setFlags(c, s->flags);
   memcpy(g_snes->ram, s->ram, 0x20000);
-  memcpy(g_snes->cart->ram, s->sram, g_snes->cart->ramSize);
+  size_t sram_size = g_snes->cart->ramSize;
+  if (sram_size > sizeof(s->sram))
+    sram_size = sizeof(s->sram);
+  memcpy(g_snes->cart->ram, s->sram, sram_size);
   memcpy(g_snes->ppu->vram, s->vram, sizeof(uint16) * 0x8000);
 }
 
 static bool g_fail;
+static bool g_seed_rom;
+
+void EmuSetSeedIgnoreKnownJp(bool enabled) {
+  // Kept for command-line compatibility. The known JP 1.0 divergence at
+  // $7F:1100/VRAM $4680 is now implemented in C, so nothing is masked.
+  (void)enabled;
+}
 
 // b is mine, a is theirs
 static void VerifySnapshotsEq(Snapshot *b, Snapshot *a, Snapshot *prev) {
@@ -114,7 +134,7 @@ static void VerifySnapshotsEq(Snapshot *b, Snapshot *a, Snapshot *prev) {
   a->ram[0x654] = b->ram[0x654];  // msu_volume
 
   memcpy(a->ram + 0x1CDD, b->ram + 0x1CDD, 2);  // dialogue_msg_src_offs
-  
+
   if (memcmp(b->ram, a->ram, 0x20000)) {
     fprintf(stderr, "@%d: Memory compare failed (mine != theirs, prev):\n", frame_counter);
     int j = 0;
@@ -261,7 +281,11 @@ void RunOrigAsmCodeOneLoop(Snes *snes) {
       dma_doDma(snes->dma);
 
     uint32_t pc = snes->cpu->k << 16 | snes->cpu->pc;
-    if (pc == 0x8034 || pc == 0x9f81d && loops >= 10 || pc == 0x8225 || pc == 0x82D2)
+    // FastROM (the ALttPR seed base) runs the same loop with PB=$80; accept
+    // both banks so the seed oracle stops at the same wait points.
+    if (pc == 0x8034 || pc == 0x808034 ||
+        (pc == 0x9f81d || pc == 0x89f81d) && loops >= 10 ||
+        pc == 0x8225 || pc == 0x808225 || pc == 0x82D2 || pc == 0x8082D2)
       break;
   }
 }
@@ -336,6 +360,8 @@ void EmuRunFrameWithCompare(uint16 input_state, int run_what) {
   VerifySnapshotsEq(&g_snapshot_mine, &g_snapshot_theirs, &g_snapshot_before);
   if (g_fail) {
     printf("early fail\n");
+    if (g_headless)
+      exit(3);
     assert(0);
     //return turbo;
   }
@@ -356,6 +382,8 @@ again_mine:
   VerifySnapshotsEq(&g_snapshot_mine, &g_snapshot_theirs, &g_snapshot_before);
 
   if (g_fail) {
+    if (g_headless)
+      exit(3);
     g_fail = false;
     if (1) {
       RestoreMySnapshot(&g_snapshot_before);
@@ -395,6 +423,86 @@ static void PatchRomArray(uint8_t *rom, uint32_t addr, const uint8 *values, int 
 }
 
 
+
+// The seed ROM is JP 1.0 + z3randomizer + the per-seed data, so most of the
+// US PatchRom sites either no longer contain the US instruction or are owned
+// by a z3randomizer hook. The seed oracle applies only the sites whose US
+// precondition still matches; everything else is deliberately left alone.
+// 93 is the number of US patch operations in PatchRom below (individual
+// ancilla/array entries included).
+static int g_seed_patch_applied;
+static int g_seed_patch_skipped;
+
+// The US PatchRom moves the OAM z load (LDA/STA/STZ) before the x bounds
+// branch so the out-of-bounds path never reads a stale $04. The JP 1.0 body
+// is at a different offset, so find it by its exact byte signature instead
+// of reusing the US file offset.
+static void PatchRomSeedOamPrep(uint8_t *rom) {
+  static const uint8 kSig[] = {
+    0xe2, 0x20, 0xb0, 0x40, 0xbd, 0x70, 0x0f, 0x85, 0x04, 0x64, 0x05, 0xc2, 0x20,
+  };
+  uint8_t *found = NULL;
+  int hits = 0;
+  for (uint32 off = 0; off + sizeof(kSig) <= 0x200000; off++) {
+    if (memcmp(rom + off, kSig, sizeof(kSig)) == 0) {
+      found = rom + off + 2;
+      hits++;
+    }
+  }
+  if (hits != 1) {
+    fprintf(stderr, "seed rom: skip OAM prep patch (%d signature hits)\n", hits);
+    g_seed_patch_skipped++;
+    return;
+  }
+  memmove(found, found + 2, 7);
+  found[7] = 0xb0;
+  found[8] = 0x40 - 7;
+  g_seed_patch_applied++;
+  fprintf(stderr, "seed rom: OAM prep patch at %06X: "
+                  "%02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
+          (uint32)(found - rom), found[0], found[1], found[2], found[3], found[4],
+          found[5], found[6], found[7], found[8]);
+}
+
+static void PatchRomSeed(uint8_t *rom) {
+  g_seed_patch_applied = 0;
+  g_seed_patch_skipped = 0;
+
+  PatchRomSeedOamPrep(rom);
+
+  // Better random numbers: keep the C implementation and the ROM in sync.
+  // The table below applies the US redirect; the new routine lives in spare
+  // space and is written here because the US bytes there are not a patch diff.
+  if (rom[0x6BA71] == 0xAD && rom[0x6BA72] == 0x37 && rom[0x6BA73] == 0x21) {
+    int new_routine = 0xffc1;
+    uint8_t *p = rom + 0x60000, *tp = p + new_routine;
+    *tp++ = 0xad; *tp++ = 0xa1; *tp++ = 0x0f;
+    *tp++ = 0x18; *tp++ = 0x65; *tp++ = 0x1a;
+    *tp++ = 0x4a;
+    *tp++ = 0xb0; *tp++ = 0x02;
+    *tp++ = 0x49; *tp++ = 0xb8;
+    *tp++ = 0x8d; *tp++ = 0xa1; *tp++ = 0x0f;
+    *tp++ = 0x18;
+    *tp++ = 0x6b;
+    g_seed_patch_applied++;
+  } else {
+    fprintf(stderr, "seed rom: skip patch random-generator redirect (site changed)\n");
+    g_seed_patch_skipped++;
+  }
+
+  // Apply the remaining US PatchRom byte changes by matching the US
+  // instruction bytes plus a few bytes of context, so a JP 1.0 shift does
+  // not require a hardcoded file offset. Sites whose US sequence is gone (or
+  // whose z3randomizer hook replaced it) are reported and left alone.
+  g_seed_patch_applied += SeedRom_ApplyUSPatches(rom, 0x200000, 1);
+  g_seed_patch_applied += SeedRom_ApplyMap16Stripes(rom, 1);
+
+  fprintf(stderr, "seed rom: PatchRom applied %d of 93 US sites, skipped %d "
+                  "(JP 1.0 differences or z3randomizer overlap)\n",
+          g_seed_patch_applied, 93 - g_seed_patch_applied);
+  if (g_seed_patch_skipped)
+    fprintf(stderr, "seed rom: %d signature/precondition mismatches on this seed\n", g_seed_patch_skipped);
+}
 
 static void PatchRom(uint8_t *rom) {
   //  fix a bug with unitialized memory
@@ -575,11 +683,64 @@ static void PatchRom(uint8_t *rom) {
 
 
 
+static uint32 g_seed_rom_version;
+
+bool EmuSeedRomActive(void) {
+  return g_seed_rom;
+}
+
+const uint8 *EmuSeedRomData(void) {
+  return g_seed_rom && g_snes && g_snes->cart ? g_snes->cart->rom : NULL;
+}
+
+void EmuRunSeedRoutine(uint32 pc) {
+  if (!g_seed_rom)
+    return;
+  uint16 old_sp = g_cpu->sp;
+  uint16 old_dp = g_cpu->dp;
+  uint8 old_sentinel = g_ram[0x1ffff];
+  memcpy(g_snes->ppu->vram, g_zenv.ppu->vram, sizeof(uint16) * 0x8000);
+  g_cpu->sp = 0x1f3e;
+  g_cpu->dp = 0;
+  RunEmulatedFuncSilent(pc, 0, 0, 0, true, true, 0, 2);
+  memcpy(g_zenv.ppu->vram, g_snes->ppu->vram, sizeof(uint16) * 0x8000);
+  g_ram[0x1ffff] = old_sentinel;
+  g_cpu->sp = old_sp;
+  g_cpu->dp = old_dp;
+}
+
+uint32 EmuSeedRomVersion(void) {
+  return g_seed_rom_version;
+}
+
 bool EmuInitialize(uint8 *data, size_t size) {
+  g_seed_rom = false;
   PatchRom(data);
   g_snes = snes_init(g_emulated_ram);
   g_cpu = g_snes->cpu;
 
   ZeldaSetupEmuCallbacks(g_emulated_ram, &EmuRunFrameWithCompare, &EmuSynchronizeWholeState);
   return snes_loadRom(g_snes, data, (int)size);
+}
+
+bool EmuInitializeSeed(uint8 *data, size_t size) {
+  // The seed mode only makes sense for the 2 MB JP 1.0 + z3randomizer ROM
+  // whose internal title starts with "VT ".
+  if (size < 0x200000 || memcmp(data + 0x7fc0, "VT", 2) != 0) {
+    fprintf(stderr, "oracle-rom: not an ALttPR seed ROM (need 2 MB, VT title)\n");
+    return false;
+  }
+  g_seed_rom = true;
+  g_seed_rom_version = 0;
+  PatchRomSeed(data);
+  g_snes = snes_init(g_emulated_ram);
+  g_snes->apu_port_echo = true;
+  g_cpu = g_snes->cpu;
+
+  ZeldaSetupEmuCallbacks(g_emulated_ram, &EmuRunFrameWithCompare, &EmuSynchronizeWholeState);
+  bool ok = snes_loadRom(g_snes, data, (int)size);
+  if (ok && g_snes->cart->romSize >= 0x7fe4)
+    g_seed_rom_version = WORD(g_snes->cart->rom[0x7fe0]) |
+                         (uint32)WORD(g_snes->cart->rom[0x7fe2]) << 16;
+  return ok;
 }

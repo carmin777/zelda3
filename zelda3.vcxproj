@@ -236,6 +236,23 @@
     <ClCompile Include="src\main.c" />
     <ClCompile Include="src\messaging.c" />
     <ClCompile Include="src\misc.c" />
+    <ClCompile Include="src\mod\asset_names.c" />
+    <ClCompile Include="src\mod\draw.c" />
+    <ClCompile Include="src\mod\events.c" />
+    <ClCompile Include="src\mod\lua_api.c">
+      <ExcludedFromBuild Condition="'$(ZELDA3_LUA)'!='1'">true</ExcludedFromBuild>
+      <PreprocessorDefinitions Condition="'$(ZELDA3_LUA)'=='1'">ZELDA3_LUA;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ClCompile Include="src\mod\lua_script.c">
+      <ExcludedFromBuild Condition="'$(ZELDA3_LUA)'!='1'">true</ExcludedFromBuild>
+      <PreprocessorDefinitions Condition="'$(ZELDA3_LUA)'=='1'">ZELDA3_LUA;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ClCompile Include="src\mod\lua_save.c">
+      <PreprocessorDefinitions Condition="'$(ZELDA3_LUA)'=='1'">ZELDA3_LUA;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ClCompile Include="src\mod\mods.c" />
+    <ClCompile Include="src\mod\nwa_server.c" />
+    <ClCompile Include="src\mod\state_table.c" />
     <ClCompile Include="src\audio.c" />
     <ClCompile Include="src\nmi.c" />
     <ClCompile Include="src\overlord.c" />
@@ -394,6 +411,7 @@
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ReleaseDeploy|x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
     </ClCompile>
+    <ClCompile Include="third_party\cjson\cJSON.c" />
     <ClCompile Include="third_party\opus-1.3.1-stripped\opus_decoder_amalgam.c" />
     <ClCompile Include="third_party\opus-1.3.1-stripped\quant_bands.c">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</ExcludedFromBuild>
@@ -444,6 +462,14 @@
     <ClInclude Include="src\ancilla.h" />
     <ClInclude Include="src\assets.h" />
     <ClInclude Include="src\attract.h" />
+    <ClInclude Include="src\mod\asset_names.h" />
+    <ClInclude Include="src\mod\draw.h" />
+    <ClInclude Include="src\mod\lua_internal.h" />
+    <ClInclude Include="src\mod\lua_save.h" />
+    <ClInclude Include="src\mod\lua_script.h" />
+    <ClInclude Include="src\mod\mods.h" />
+    <ClInclude Include="src\mod\nwa_server.h" />
+    <ClInclude Include="src\mod\state_table.h" />
     <ClInclude Include="src\config.h" />
     <ClInclude Include="src\dungeon.h" />
     <ClInclude Include="src\ending.h" />
@@ -453,6 +479,7 @@
     <ClInclude Include="src\load_gfx.h" />
     <ClInclude Include="src\messaging.h" />
     <ClInclude Include="src\misc.h" />
+    <ClInclude Include="src\mod\events.h" />
     <ClInclude Include="src\audio.h" />
     <ClInclude Include="src\nmi.h" />
     <ClInclude Include="src\overlord.h" />
@@ -721,6 +748,7 @@
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ReleaseDeploy|x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
     </ClInclude>
+    <ClInclude Include="third_party\cjson\cJSON.h" />
     <ClInclude Include="third_party\opus-1.3.1-stripped\x86\x86cpu.h">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='ReleaseDeploy|Win32'">true</ExcludedFromBuild>

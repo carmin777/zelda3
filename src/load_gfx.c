@@ -6,6 +6,8 @@
 #include "player.h"
 #include "sprite.h"
 #include "assets.h"
+#include "zelda_cpu_infra.h"
+#include "mod/seed_oracle.h"
 
 // Allow this to be overwritten
 uint16 kGlovesColor[2] = {0x52f6, 0x376};
@@ -393,7 +395,7 @@ void PaletteFilter_IncrCountdown() {
 
 uint8 *LoadItemAnimationGfxOne(uint8 *dst, int num, int r12, bool from_temp) {
   static const uint8 kIntro_LoadGfx_Tab[10] = { 0, 11, 8, 38, 42, 45, 34, 3, 33, 46 };
-  const uint8 *src = from_temp ? &g_ram[0x14000] : GetCompSpritePtr(0);
+  const uint8 *src = from_temp ? decomp_buffer : GetCompSpritePtr(0);
   const uint8 *base_src = src;
   src += kIntro_LoadGfx_Tab[r12] * 24;
   Expand3To4High(dst, src, base_src, num);
@@ -410,8 +412,8 @@ void EraseTileMaps_normal() {
 }
 
 static void DecompAndUpload2bpp(uint16 *vram_ptr, uint8 pack) {
-  Decomp_spr(&g_ram[0x14000], pack);
-  const uint8 *src = &g_ram[0x14000];
+  Decomp_spr(decomp_buffer, pack);
+  const uint8 *src = decomp_buffer;
   memcpy(vram_ptr, src, 1024 * sizeof(uint16));
 }
 
@@ -427,6 +429,11 @@ void LoadOverworldMapPalette() {
 }
 
 void EraseTileMaps_triforce() {  // 808333
+  if (EmuSeedRomActive()) {
+    // JP $80:8333 fills VRAM $0000 with $0180 and $6000 with $0188.
+    EraseTileMaps(0x188, 0x180);
+    return;
+  }
   EraseTileMaps(0xa9, 0x7f);
 }
 
@@ -450,62 +457,62 @@ void EnableForceBlank() {  // 80893d
 }
 
 void LoadItemGFXIntoWRAM4BPPBuffer() {  // 80d231
-  uint8 *dst = &g_ram[0x9000 + 0x480];
+  uint8 *dst = (gfx_4bpp_buffer + 0x480);
   dst = LoadItemAnimationGfxOne(dst, 7, 0, false);  // rod
   dst = LoadItemAnimationGfxOne(dst, 7, 1, false);  // hammer
   dst = LoadItemAnimationGfxOne(dst, 3, 2, false);  // bow
 
-  Decomp_spr(&g_ram[0x14000], 95);
+  Decomp_spr(decomp_buffer, 95);
   dst = LoadItemAnimationGfxOne(dst, 4, 3, true);  // shovel
   dst = LoadItemAnimationGfxOne(dst, 3, 4, true);  // sleeping zzz
   dst = LoadItemAnimationGfxOne(dst, 1, 5, true);  // misc #2
   dst = LoadItemAnimationGfxOne(dst, 4, 6, false); // hookshot
 
-  Decomp_spr(&g_ram[0x14000], 96);
+  Decomp_spr(decomp_buffer, 96);
   dst = LoadItemAnimationGfxOne(dst, 14, 7, true); // bugnet
   dst = LoadItemAnimationGfxOne(dst, 7, 8, true);  // cane
 
-  Decomp_spr(&g_ram[0x14000], 95);
+  Decomp_spr(decomp_buffer, 95);
   dst = LoadItemAnimationGfxOne(dst, 2, 9, true);  // book of mudora
-  Decomp_spr(&g_ram[0x14000], 84);
+  Decomp_spr(decomp_buffer, 84);
 
-  dst = &g_ram[0xa480];
-  Expand3To4High(dst, &g_ram[0x14000], g_ram, 8);
-  Expand3To4High(dst + 8 * 0x20, &g_ram[0x14180], g_ram, 8);
+  dst = (gfx_4bpp_buffer + 0x1480);
+  Expand3To4High(dst, decomp_buffer, g_ram, 8);
+  Expand3To4High(dst + 8 * 0x20, (decomp_buffer + 0x180), g_ram, 8);
 
   // rupees
-  Decomp_spr(&g_ram[0x14000], 96);
-  dst = &g_ram[0xb280];
-  Expand3To4High(dst, &g_ram[0x14000], g_ram, 3);
-  Expand3To4High(dst + 3 * 0x20, &g_ram[0x14180], g_ram, 3);
+  Decomp_spr(decomp_buffer, 96);
+  dst = (gfx_4bpp_buffer + 0x2280);
+  Expand3To4High(dst, decomp_buffer, g_ram, 3);
+  Expand3To4High(dst + 3 * 0x20, (decomp_buffer + 0x180), g_ram, 3);
 
   LoadItemGFX_Auxiliary();
 }
 
 void DecompressSwordGraphics() {  // 80d2c8
-  Decomp_spr(&g_ram[0x14600], 0x5f);
-  Decomp_spr(&g_ram[0x14000], 0x5e);
-  const uint8 *src = &g_ram[0x14000] + kSwordTypeToGfxOffs[link_sword_type];
-  Expand3To4High(&g_ram[0x9000 + 0], src, g_ram, 12);
-  Expand3To4High(&g_ram[0x9000 + 0x180], src + 0x180, g_ram, 12);
+  Decomp_spr(decomp_buffer_2, 0x5f);
+  Decomp_spr(decomp_buffer, 0x5e);
+  const uint8 *src = decomp_buffer + kSwordTypeToGfxOffs[link_sword_type];
+  Expand3To4High(gfx_4bpp_buffer, src, g_ram, 12);
+  Expand3To4High((gfx_4bpp_buffer + 0x180), src + 0x180, g_ram, 12);
 }
 
 void DecompressShieldGraphics() {  // 80d308
-  Decomp_spr(&g_ram[0x14600], 0x5f);
-  Decomp_spr(&g_ram[0x14000], 0x5e);
-  const uint8 *src = &g_ram[0x14000] + kShieldTypeToGfxOffs[link_shield_type];
-  Expand3To4High(&g_ram[0x9000 + 0x300], src, g_ram, 6);
-  Expand3To4High(&g_ram[0x9000 + 0x3c0], src + 0x180, g_ram,6);
+  Decomp_spr(decomp_buffer_2, 0x5f);
+  Decomp_spr(decomp_buffer, 0x5e);
+  const uint8 *src = decomp_buffer + kShieldTypeToGfxOffs[link_shield_type];
+  Expand3To4High((gfx_4bpp_buffer + 0x300), src, g_ram, 6);
+  Expand3To4High((gfx_4bpp_buffer + 0x3c0), src + 0x180, g_ram,6);
 }
 
 void DecompressAnimatedDungeonTiles(uint8 a) {  // 80d337
-  Decomp_bg(&g_ram[0x14000], a);
-  Do3To4Low16Bit(&g_ram[0x9000 + 0x1680], &g_ram[0x14000], 48);
-  Decomp_bg(&g_ram[0x14000], 0x5c);
-  Do3To4Low16Bit(&g_ram[0x9000 + 0x1C80], &g_ram[0x14000], 48);
+  Decomp_bg(decomp_buffer, a);
+  Do3To4Low16Bit((gfx_4bpp_buffer + 0x1680), decomp_buffer, 48);
+  Decomp_bg(decomp_buffer, 0x5c);
+  Do3To4Low16Bit((gfx_4bpp_buffer + 0x1C80), decomp_buffer, 48);
 
   for (int i = 0; i < 256; i++) {
-    uint8 *p = &g_ram[0x9000 + i * 2];
+    uint8 *p = (gfx_4bpp_buffer + i * 2);
     uint16 x = WORD(p[0x1880]);
     WORD(p[0x1880]) = WORD(p[0x1C80]);
     WORD(p[0x1C80]) = WORD(p[0x1E80]);
@@ -516,22 +523,22 @@ void DecompressAnimatedDungeonTiles(uint8 a) {  // 80d337
 }
 
 void DecompressAnimatedOverworldTiles(uint8 a) {  // 80d394
-  Decomp_bg(&g_ram[0x14000], a);
-  Do3To4Low16Bit(&g_ram[0x9000 + 0x1680], &g_ram[0x14000], 64);
-  Decomp_bg(&g_ram[0x14000], a + 1);
-  Do3To4Low16Bit(&g_ram[0x9000 + 0x1E80], &g_ram[0x14000], 32);
+  Decomp_bg(decomp_buffer, a);
+  Do3To4Low16Bit((gfx_4bpp_buffer + 0x1680), decomp_buffer, 64);
+  Decomp_bg(decomp_buffer, a + 1);
+  Do3To4Low16Bit((gfx_4bpp_buffer + 0x1E80), decomp_buffer, 32);
   animated_tile_vram_addr = 0x3c00;
 }
 
 void LoadItemGFX_Auxiliary() {  // 80d3c6
-  Decomp_bg(&g_ram[0x14000], 0xf);
-  Do3To4Low16Bit(&g_ram[0x9000 + 0x2340], &g_ram[0x14000], 16);
+  Decomp_bg(decomp_buffer, 0xf);
+  Do3To4Low16Bit((gfx_4bpp_buffer + 0x2340), decomp_buffer, 16);
 
-  Decomp_spr(&g_ram[0x14000], 0x58);
-  Do3To4Low16Bit(&g_ram[0x9000 + 0x2540], &g_ram[0x14000], 32);
+  Decomp_spr(decomp_buffer, 0x58);
+  Do3To4Low16Bit((gfx_4bpp_buffer + 0x2540), decomp_buffer, 32);
 
-  Decomp_bg(&g_ram[0x14000], 0x5);
-  Do3To4Low16Bit(&g_ram[0x9000 + 0x2dc0], &g_ram[0x14480], 2);
+  Decomp_bg(decomp_buffer, 0x5);
+  Do3To4Low16Bit((gfx_4bpp_buffer + 0x2dc0), (decomp_buffer + 0x480), 2);
 }
 
 void LoadFollowerGraphics() {  // 80d423
@@ -544,22 +551,22 @@ void LoadFollowerGraphics() {  // 80d423
         yv = 0x58;
     }
   }
-  Decomp_spr(&g_ram[0x14600], yv);
-  Decomp_spr(&g_ram[0x14000], 0x65);
-  Do3To4Low16Bit(&g_ram[0x9000] + 0x2940, &g_ram[0x14000 + kTagalongWhich[follower_indicator]], 0x20);
+  Decomp_spr(decomp_buffer_2, yv);
+  Decomp_spr(decomp_buffer, 0x65);
+  Do3To4Low16Bit(gfx_4bpp_buffer + 0x2940, (decomp_buffer + kTagalongWhich[follower_indicator]), 0x20);
 }
 
 void WriteTo4BPPBuffer_at_7F4000(uint8 a) {  // 80d4db
-  uint8 *src = &g_ram[0x14000] + kDecodeAnimatedSpriteTile_Tab[a];
-  Expand3To4High(&g_ram[0x9000] + 0x2d40, src, g_ram, 2);
-  Expand3To4High(&g_ram[0x9000] + 0x2d40 + 0x40, src + 0x180, g_ram, 2);
+  uint8 *src = decomp_buffer + kDecodeAnimatedSpriteTile_Tab[a];
+  Expand3To4High(gfx_4bpp_buffer + 0x2d40, src, g_ram, 2);
+  Expand3To4High(gfx_4bpp_buffer + 0x2d40 + 0x40, src + 0x180, g_ram, 2);
 }
 
 void DecodeAnimatedSpriteTile_variable(uint8 a) {  // 80d4ed
   uint8 y = (a == 0x23 || a >= 0x37) ? 0x5d :
             (a == 0xc || a >= 0x24) ? 0x5c : 0x5b;
-  Decomp_spr(&g_ram[0x14600], y);
-  Decomp_spr(&g_ram[0x14000], 0x5a);
+  Decomp_spr(decomp_buffer_2, y);
+  Decomp_spr(decomp_buffer, 0x5a);
   WriteTo4BPPBuffer_at_7F4000(a);
 }
 
@@ -581,7 +588,11 @@ void Expand3To4High(uint8 *dst, const uint8 *src, const uint8 *base, int num) { 
 }
 
 void LoadTransAuxGFX() {  // 80d66e
-  uint8 *dst = &g_ram[0x6000];
+  if (EmuSeedRomActive()) {
+    SeedOracle_JpLoadTransAuxGFX();
+    return;
+  }
+  uint8 *dst = aux_bg_gfx_buffer_0;
   const uint8 *p = kAuxTilesets[aux_tile_theme_index];
   int len;
 
@@ -609,7 +620,7 @@ void LoadTransAuxGFX() {  // 80d66e
 }
 
 void LoadTransAuxGFX_sprite() {  // 80d6f9
-  Gfx_LoadSpritesInner(&g_ram[0x7800]);
+  Gfx_LoadSpritesInner(sprite_gfx_buffer_0);
 }
 
 void Gfx_LoadSpritesInner(uint8 *dst) {  // 80d706
@@ -636,20 +647,20 @@ void Gfx_LoadSpritesInner(uint8 *dst) {  // 80d706
 }
 
 void ReloadPreviouslyLoadedSheets() {  // 80d788
-  Decomp_bg(&g_ram[0x6000], aux_bg_subset_0);
-  Decomp_bg(&g_ram[0x6600], aux_bg_subset_1);
-  Decomp_bg(&g_ram[0x6c00], aux_bg_subset_2);
-  Decomp_bg(&g_ram[0x7200], aux_bg_subset_3);
-  Decomp_spr(&g_ram[0x7800], sprite_gfx_subset_0);
-  Decomp_spr(&g_ram[0x7e00], sprite_gfx_subset_1);
-  Decomp_spr(&g_ram[0x8400], sprite_gfx_subset_2);
-  Decomp_spr(&g_ram[0x8a00], sprite_gfx_subset_3);
+  Decomp_bg(aux_bg_gfx_buffer_0, aux_bg_subset_0);
+  Decomp_bg(aux_bg_gfx_buffer_1, aux_bg_subset_1);
+  Decomp_bg(aux_bg_gfx_buffer_2, aux_bg_subset_2);
+  Decomp_bg(aux_bg_gfx_buffer_3, aux_bg_subset_3);
+  Decomp_spr(sprite_gfx_buffer_0, sprite_gfx_subset_0);
+  Decomp_spr(sprite_gfx_buffer_1, sprite_gfx_subset_1);
+  Decomp_spr(sprite_gfx_buffer_2, sprite_gfx_subset_2);
+  Decomp_spr(sprite_gfx_buffer_3, sprite_gfx_subset_3);
   incremental_counter_for_vram = 0;
 }
 
 void Attract_DecompressStoryGFX() {  // 80d80e
-  Decomp_spr(&g_ram[0x14000], 0x67);
-  Decomp_spr(&g_ram[0x14800], 0x68);
+  Decomp_spr(decomp_buffer, 0x67);
+  Decomp_spr(decomp_buffer_3, 0x68);
 }
 
 void AnimateMirrorWarp() {  // 80d864
@@ -665,26 +676,26 @@ void AnimateMirrorWarp() {  // 80d864
     break;
   case 1:
     AnimateMirrorWarp_DecompressNewTileSets();
-    Decomp_bg(&g_ram[0x14000], kVariousPacks[xt]);
-    Decomp_bg(&g_ram[0x14600], kVariousPacks[xt + 1]);
-    Do3To4High16Bit(&g_ram[0x10000], &g_ram[0x14000], 64);
-    Do3To4Low16Bit(&g_ram[0x10800], &g_ram[0x14600], 64);
+    Decomp_bg(decomp_buffer, kVariousPacks[xt]);
+    Decomp_bg(decomp_buffer_2, kVariousPacks[xt + 1]);
+    Do3To4High16Bit((uint8*)messaging_buf, decomp_buffer, 64);
+    Do3To4Low16Bit(((uint8*)messaging_buf + 0x800), decomp_buffer_2, 64);
     break;
   case 2:
-    Decomp_bg(&g_ram[0x14000], kVariousPacks[xt + 2]);
-    Decomp_bg(&g_ram[0x14600], kVariousPacks[xt + 3]);
-    Do3To4Low16Bit(&g_ram[0x10000], &g_ram[0x14000], 64);
-    Do3To4High16Bit(&g_ram[0x10800], &g_ram[0x14600], 64);
+    Decomp_bg(decomp_buffer, kVariousPacks[xt + 2]);
+    Decomp_bg(decomp_buffer_2, kVariousPacks[xt + 3]);
+    Do3To4Low16Bit((uint8*)messaging_buf, decomp_buffer, 64);
+    Do3To4High16Bit(((uint8*)messaging_buf + 0x800), decomp_buffer_2, 64);
     break;
   case 3:
-    Decomp_bg(&g_ram[0x14000], aux_bg_subset_1);
-    Decomp_bg(&g_ram[0x14600], aux_bg_subset_2);
-    Do3To4High16Bit(&g_ram[0x10000], &g_ram[0x14000], 128);
+    Decomp_bg(decomp_buffer, aux_bg_subset_1);
+    Decomp_bg(decomp_buffer_2, aux_bg_subset_2);
+    Do3To4High16Bit((uint8*)messaging_buf, decomp_buffer, 128);
     break;
   case 4:
-    Decomp_bg(&g_ram[0x14000], kVariousPacks[xt + 4]);
-    Decomp_bg(&g_ram[0x14600], kVariousPacks[xt + 5]);
-    Do3To4Low16Bit(&g_ram[0x10000], &g_ram[0x14000], 128);
+    Decomp_bg(decomp_buffer, kVariousPacks[xt + 4]);
+    Decomp_bg(decomp_buffer_2, kVariousPacks[xt + 5]);
+    Do3To4Low16Bit((uint8*)messaging_buf, decomp_buffer, 128);
     break;
   case 5:
     PreOverworld_LoadOverlays();
@@ -712,22 +723,22 @@ void AnimateMirrorWarp() {  // 80d864
   case 11:
     t = overworld_screen_index;
     TS_copy = (t == 0 || t == 0x70 || t == 0x40 || t == 0x5b || t == 3 || t == 5 || t == 7 || t == 0x43 || t == 0x45 || t == 0x47);
-    Do3To4High16Bit(&g_ram[0x10000], GetCompSpritePtr(kVariousPacks[xt + 6]), 64);
+    Do3To4High16Bit((uint8*)messaging_buf, GetCompSpritePtr(kVariousPacks[xt + 6]), 64);
     break;
   case 12:
-    Decomp_spr(&g_ram[0x14000], sprite_gfx_subset_0);
-    Decomp_spr(&g_ram[0x14600], sprite_gfx_subset_1);
+    Decomp_spr(decomp_buffer, sprite_gfx_subset_0);
+    Decomp_spr(decomp_buffer_2, sprite_gfx_subset_1);
     tt = WORD(sprite_gfx_subset_0);
     if (tt == 0x52 || tt == 0x53 || tt == 0x5a || tt == 0x5b)
-      Do3To4High16Bit(&g_ram[0x10000], &g_ram[0x14000], 64);
+      Do3To4High16Bit((uint8*)messaging_buf, decomp_buffer, 64);
     else
-      Do3To4Low16Bit(&g_ram[0x10000], &g_ram[0x14000], 64);
-    Do3To4Low16Bit(&g_ram[0x10800], &g_ram[0x14600], 64);
+      Do3To4Low16Bit((uint8*)messaging_buf, decomp_buffer, 64);
+    Do3To4Low16Bit(((uint8*)messaging_buf + 0x800), decomp_buffer_2, 64);
     break;
   case 13:
-    Decomp_spr(&g_ram[0x14000], sprite_gfx_subset_2);
-    Decomp_spr(&g_ram[0x14600], sprite_gfx_subset_3);
-    Do3To4Low16Bit(&g_ram[0x10000], &g_ram[0x14000], 128);
+    Decomp_spr(decomp_buffer, sprite_gfx_subset_2);
+    Decomp_spr(decomp_buffer_2, sprite_gfx_subset_3);
+    Do3To4Low16Bit((uint8*)messaging_buf, decomp_buffer, 128);
     HandleFollowersAfterMirroring();
     break;
   case 14:
@@ -765,12 +776,12 @@ void Graphics_IncrementalVRAMUpload() {  // 80deff
 }
 
 void PrepTransAuxGfx() {  // 80df1a
-  Do3To4High16Bit(&g_ram[0x10000], &g_ram[0x6000], 0x40);
+  Do3To4High16Bit((uint8*)messaging_buf, aux_bg_gfx_buffer_0, 0x40);
   if (aux_tile_theme_index >= 32) {
-    Do3To4High16Bit(&g_ram[0x10800], &g_ram[0x6600], 0x80);
-    Do3To4Low16Bit(&g_ram[0x11800], &g_ram[0x7200], 0x40);
+    Do3To4High16Bit(((uint8*)messaging_buf + 0x800), aux_bg_gfx_buffer_1, 0x80);
+    Do3To4Low16Bit(((uint8*)messaging_buf + 0x1800), aux_bg_gfx_buffer_3, 0x40);
   } else {
-    Do3To4Low16Bit(&g_ram[0x10800], &g_ram[0x6600], 0xC0);
+    Do3To4Low16Bit(((uint8*)messaging_buf + 0x800), aux_bg_gfx_buffer_1, 0xC0);
   }
 }
 
@@ -804,11 +815,11 @@ void Do3To4Low16Bit(uint8 *dst, const uint8 *src, int num) {  // 80dfb8
 }
 
 void LoadNewSpriteGFXSet() {  // 80e031
-  Do3To4Low16Bit(&g_ram[0x10000], &g_ram[0x7800], 0xC0);
+  Do3To4Low16Bit((uint8*)messaging_buf, sprite_gfx_buffer_0, 0xC0);
   if (sprite_gfx_subset_3 == 0x52 || sprite_gfx_subset_3 == 0x53 || sprite_gfx_subset_3 == 0x5a || sprite_gfx_subset_3 == 0x5b)
-    Do3To4High16Bit(&g_ram[0x11800], &g_ram[0x8a00], 0x40);
+    Do3To4High16Bit(((uint8*)messaging_buf + 0x1800), sprite_gfx_buffer_3, 0x40);
   else
-    Do3To4Low16Bit(&g_ram[0x11800], &g_ram[0x8a00], 0x40);
+    Do3To4Low16Bit(((uint8*)messaging_buf + 0x1800), sprite_gfx_buffer_3, 0x40);
 }
 
 void InitializeTilesets() {  // 80e19b
@@ -820,10 +831,10 @@ void InitializeTilesets() {  // 80e19b
   if (p[2]) sprite_gfx_subset_2 = p[2];
   if (p[3]) sprite_gfx_subset_3 = p[3];
 
-  LoadSpriteGraphics(&g_zenv.vram[0x5000], sprite_gfx_subset_0, &g_ram[0x7800]);
-  LoadSpriteGraphics(&g_zenv.vram[0x5400], sprite_gfx_subset_1, &g_ram[0x7e00]);
-  LoadSpriteGraphics(&g_zenv.vram[0x5800], sprite_gfx_subset_2, &g_ram[0x8400]);
-  LoadSpriteGraphics(&g_zenv.vram[0x5c00], sprite_gfx_subset_3, &g_ram[0x8a00]);
+  LoadSpriteGraphics(&g_zenv.vram[0x5000], sprite_gfx_subset_0, sprite_gfx_buffer_0);
+  LoadSpriteGraphics(&g_zenv.vram[0x5400], sprite_gfx_subset_1, sprite_gfx_buffer_1);
+  LoadSpriteGraphics(&g_zenv.vram[0x5800], sprite_gfx_subset_2, sprite_gfx_buffer_2);
+  LoadSpriteGraphics(&g_zenv.vram[0x5c00], sprite_gfx_subset_3, sprite_gfx_buffer_3);
 
   const uint8 *mt = kMainTilesets[main_tile_theme_index];
   const uint8 *at = kAuxTilesets[aux_tile_theme_index];
@@ -833,21 +844,21 @@ void InitializeTilesets() {  // 80e19b
   aux_bg_subset_2 = at[2] ? at[2] : mt[5];
   aux_bg_subset_3 = at[3] ? at[3] : mt[6];
 
-  LoadBackgroundGraphics(&g_zenv.vram[0x2000], mt[0], 7, &g_ram[0x14000]);
-  LoadBackgroundGraphics(&g_zenv.vram[0x2400], mt[1], 6, &g_ram[0x14000]);
-  LoadBackgroundGraphics(&g_zenv.vram[0x2800], mt[2], 5, &g_ram[0x14000]);
-  LoadBackgroundGraphics(&g_zenv.vram[0x2c00], aux_bg_subset_0, 4, &g_ram[0x6000]);
-  LoadBackgroundGraphics(&g_zenv.vram[0x3000], aux_bg_subset_1, 3, &g_ram[0x6600]);
-  LoadBackgroundGraphics(&g_zenv.vram[0x3400], aux_bg_subset_2, 2, &g_ram[0x6c00]);
-  LoadBackgroundGraphics(&g_zenv.vram[0x3800], aux_bg_subset_3, 1, &g_ram[0x7200]);
-  LoadBackgroundGraphics(&g_zenv.vram[0x3c00], mt[7], 0, &g_ram[0x14000]);
+  LoadBackgroundGraphics(&g_zenv.vram[0x2000], mt[0], 7, decomp_buffer);
+  LoadBackgroundGraphics(&g_zenv.vram[0x2400], mt[1], 6, decomp_buffer);
+  LoadBackgroundGraphics(&g_zenv.vram[0x2800], mt[2], 5, decomp_buffer);
+  LoadBackgroundGraphics(&g_zenv.vram[0x2c00], aux_bg_subset_0, 4, aux_bg_gfx_buffer_0);
+  LoadBackgroundGraphics(&g_zenv.vram[0x3000], aux_bg_subset_1, 3, aux_bg_gfx_buffer_1);
+  LoadBackgroundGraphics(&g_zenv.vram[0x3400], aux_bg_subset_2, 2, aux_bg_gfx_buffer_2);
+  LoadBackgroundGraphics(&g_zenv.vram[0x3800], aux_bg_subset_3, 1, aux_bg_gfx_buffer_3);
+  LoadBackgroundGraphics(&g_zenv.vram[0x3c00], mt[7], 0, decomp_buffer);
 }
 
 void LoadDefaultGraphics() {  // 80e2d0
   const uint8 *src = GetCompSpritePtr(0);
 
   uint16 *vram_ptr = &g_zenv.vram[0x4000];
-  uint16 *tmp = (uint16 *)&g_ram[0xbf];
+  uint16 *tmp = (uint16 *)gfx_expand_temp_row;
   int num = 64;
   do {
     for (int i = 7; i >= 0; i--, src += 2) {
@@ -871,6 +882,12 @@ void Attract_LoadBG3GFX() {  // 80e36d
 }
 
 void Graphics_LoadChrHalfSlot() {  // 80e3fa
+  if (EmuSeedRomActive()) {
+    // JP 1.0 uses $80:E43A and uploads through NMI subroutine 11 instead of
+    // expanding directly to VRAM like the US routine.
+    SeedOracle_JpLoadChrHalfSlot();
+    return;
+  }
   int k = load_chr_halfslot_even_odd;
   if (k == 0)
     return;
@@ -912,7 +929,7 @@ void Graphics_LoadChrHalfSlot() {  // 80e3fa
   const uint8 *srcp = GetCompSpritePtr(k) + bank_offs;
   uint8 sprdata[24];
   int num = 32;
-  uint8 *dst = &g_ram[0x11000];
+  uint8 *dst = ((uint8*)messaging_buf + 0x1000);
 
   do {
     for (int i = 0; i < 24; i++)
@@ -931,7 +948,24 @@ void Graphics_LoadChrHalfSlot() {  // 80e3fa
   } while (--num);
 }
 
+void LoadHudMenuGraphics() {
+  // The 24-slot menu uses the HUD glyphs from kSprGfx packs 0x69..0x6b.
+  Decomp_spr(decomp_buffer, 0x6a);
+  memcpy(&g_zenv.vram[0x7000], decomp_buffer, 0x800 * sizeof(uint16));
+  Decomp_spr(decomp_buffer, 0x6b);
+  memcpy(&g_zenv.vram[0x7400], decomp_buffer, 0x800 * sizeof(uint16));
+  Decomp_spr(decomp_buffer, 0x69);
+  memcpy(&g_zenv.vram[0x7800], decomp_buffer, 0x800 * sizeof(uint16));
+}
+
 void TransferFontToVRAM() {  // 80e556
+  if (g_wanted_zelda_features & kFeatures0_NewStyleInventory) {
+    // In the original game the dialogue font is the same data as the HUD
+    // packs above. Reload them from the active (possibly modded) assets so a
+    // ROM import is not replaced by the US font.
+    LoadHudMenuGraphics();
+    return;
+  }
   memcpy(&g_zenv.vram[0x7000], FindIndexInMemblk(kDialogueFont(0), 0).ptr, 0x800 * sizeof(uint16));
 }
 
@@ -977,14 +1011,18 @@ void LoadBackgroundGraphics(uint16 *vram_ptr, int gfx_pack, int slot, uint8 *dec
 }
 
 void LoadCommonSprites() {  // 80e6b7
+  if (EmuSeedRomActive()) {
+    SeedOracle_JpLoadCommonSprites();
+    return;
+  }
   Do3To4High(&g_zenv.vram[0x4400], GetCompSpritePtr(misc_sprites_graphics_index));
   if (main_module_index != 1) {
     Do3To4Low(&g_zenv.vram[0x4800], GetCompSpritePtr(6));
     Do3To4Low(&g_zenv.vram[0x4c00], GetCompSpritePtr(7));
   } else {
     // select file
-    LoadSpriteGraphics(&g_zenv.vram[0x4800], 94, &g_ram[0x14000]);
-    LoadSpriteGraphics(&g_zenv.vram[0x4c00], 95, &g_ram[0x14000]);
+    LoadSpriteGraphics(&g_zenv.vram[0x4800], 94, decomp_buffer);
+    LoadSpriteGraphics(&g_zenv.vram[0x4c00], 95, decomp_buffer);
   }
 }
 
@@ -1604,8 +1642,8 @@ void Dungeon_RestoreStarTileChr() {  // 80fda7
   if (byte_7E04BC)
     xx = 32, yy = 0;
   uint16 *p = messaging_buf;
-  memcpy(p, g_ram + 0xbdc0 + xx, 32);
-  memcpy(p + 16, g_ram + 0xbdc0 + yy, 32);
+  memcpy(p, gfx_4bpp_buffer + 0x2dc0 + xx, 32);
+  memcpy(p + 16, gfx_4bpp_buffer + 0x2dc0 + yy, 32);
   nmi_subroutine_index = 0x18;
 }
 
@@ -1647,7 +1685,7 @@ void Module07_16_UpdatePegs_Step2() {  // 82974d
 }
 
 void Dungeon_UpdatePegGFXBuffer(int x, int y) {  // 829773
-  uint16 *src = (uint16 *)&g_ram[0xb340];
+  uint16 *src = (uint16 *)(gfx_4bpp_buffer + 0x2340);
   for (int i = 0; i < 64; i++)
     messaging_buf[i] = src[(x >> 1) + i];
   for (int i = 0; i < 64; i++)
@@ -2082,6 +2120,10 @@ void Palette_Load_DungeonSet() {  // 9bee74
 }
 
 void Palette_Load_OWBG3() {  // 9beea8
+  if (EmuSeedRomActive()) {
+    SeedOracle_JpLoadOWBG3();
+    return;
+  }
   const uint16 *src = kPalette_OverworldBgAux3 + overworld_palette_aux3_bp7_lo * 7;
   Palette_LoadSingle(src, 0xE2, 6);
 }

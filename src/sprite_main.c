@@ -1,4 +1,5 @@
 #include "sprite_main.h"
+#include "zelda_cpu_infra.h"
 #include "sprite.h"
 #include "tagalong.h"
 #include "ancilla.h"
@@ -8,8 +9,23 @@
 #include "dungeon.h"
 #include "player.h"
 #include "misc.h"
+#include "mod/hooks.h"
+#include "mod/items.h"
+#include "mod/seed_import.h"
+#include "mod/shared_world.h"
+#include "mod/shop.h"
+#include "mod/sprite_override.h"
 
-#define byte_7FFE01 (*(uint8*)(g_ram+0x1FE01))
+// Shop item sprites use 0xbb with subtype2 7..13 for the vanilla inventory.
+// A mod-defined shop uses 14 and keeps its item/price/count in ModShop.
+enum {
+  kShopItemSubtype_First = 7,
+  kShopItemSubtype_Custom = 14,
+};
+
+static void ShopKeeper_SpawnShopItemEntry(int k, int pos,
+                                          const ModShopEntry *entry);
+
 static const int8 kSpriteKeese_Tab2[16] = {0, 8, 11, 14, 16, 14, 11, 8, 0, -8, -11, -14, -16, -14, -11, -8};
 static const int8 kSpriteKeese_Tab3[16] = {-16, -14, -11, -8, 0, 8, 11, 14, 16, 14, 11, 8, 0, -9, -11, -14};
 static const int8 kZazak_Yvel[4] = {0, 0, 16, -16};
@@ -18,10 +34,6 @@ static const int8 kDesertBarrier_Xv[4] = {16, -16, 0, 0};
 static const int8 kDesertBarrier_Yv[4] = {0, 0, 16, -16};
 static const uint8 kCrystalSwitchPal[2] = {2, 4};
 static const uint8 kZazak_Dir2[8] = {2, 3, 2, 3, 0, 1, 0, 1};
-#define moldorm_x_lo ((uint8*)(g_ram+0x1FC00))
-#define moldorm_x_hi ((uint8*)(g_ram+0x1FC80))
-#define moldorm_y_lo ((uint8*)(g_ram+0x1FD00))
-#define moldorm_y_hi ((uint8*)(g_ram+0x1FD80))
 static const int8 kBadPullDownSwitch_X[5] = {-4, 12, 0, -4, 4};
 static const int8 kBadPullDownSwitch_Y[5] = {-3, -3, 0, 5, 5};
 static const uint8 kBadPullDownSwitch_Char[5] = {0xd2, 0xd2, 0xc4, 0xe4, 0xe4};
@@ -30,10 +42,6 @@ static const uint8 kBadPullDownSwitch_Big[5] = {0, 0, 2, 2, 2};
 static const uint8 kBadPullSwitch_Tab5[6] = {0, 1, 2, 3, 4, 5};
 static const uint8 kBadPullSwitch_Tab4[12] = {0, 0, 1, 1, 2, 2, 3, 3, 4, 5, 5, 5};
 static const uint8 kThief_Gfx[12] = {11, 8, 2, 5, 9, 6, 0, 3, 10, 7, 1, 4};
-#define word_7FFE00 (*(uint16*)(g_ram+0x1FE00))
-#define word_7FFE02 (*(uint16*)(g_ram+0x1FE02))
-#define word_7FFE04 (*(uint16*)(g_ram+0x1FE04))
-#define word_7FFE06 (*(uint16*)(g_ram+0x1FE06))
 static const int16 kTutorialSoldier_X[20] = {
   4, 0, -6, -6, 2, 0, 0, -7, -7, -7, 0, 0, 0xf, 0xf, 0xf, 6,
   0xe, -4, 4, 0,
@@ -395,8 +403,6 @@ static const uint8 kFluteBoyAnimal_OamFlags[2] = {0x40, 0};
 static const uint8 kFluteBoyAnimal_Gfx[3] = {0, 1, 2};
 static const uint8 kGibo_OamFlags[4] = {0, 0x40, 0xc0, 0x80};
 static const uint8 kGibo_OamFlags2[2] = {11, 7};
-#define chainchomp_x_hist ((uint16*)(g_ram+0x1FC00))
-#define chainchomp_y_hist ((uint16*)(g_ram+0x1FD00))
 static const uint8 kBlindHead_Draw_Char[16] = {0x86, 0x86, 0x84, 0x82, 0x80, 0x82, 0x84, 0x86, 0x86, 0x86, 0x88, 0x8a, 0x8c, 0x8a, 0x88, 0x86};
 static const uint8 kBlindHead_Draw_Flags[16] = {0, 0, 0, 0, 0, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0, 0, 0, 0};
 static const uint8 kGanon_G_Func2[16] = { 8, 7, 6, 5, 4, 3, 2, 1, 8, 7, 6, 5, 4, 3, 2, 1 };
@@ -1264,7 +1270,16 @@ void Sprite_WishPond3(int k) {
     PaletteFilter_RestoreSP5F();
     Palette_RevertTranslucencySwap();
     item_receipt_method = 2;
-    Link_ReceiveItem(sprite_graphics[k], 0);
+    {
+      uint8 item = sprite_graphics[k];
+      if (item >= 0x2B && item <= 0x30)
+        item = ModSeedImport_FixedItem(savegame_is_darkworld ?
+            "fixed:PyramidPotion" : "fixed:WaterfallPotion", item);
+      else if (item == 0x01 || item == 0x02 || item == 0x03 ||
+               item == 0x49 || item == 0x50)
+        item = ModSeedImport_FixedItem("fixed:FairySword", item);
+      Link_ReceiveItem(item, 0);
+    }
     sprite_ai_state[k] = 10;
     break;
   case 10: {
@@ -1415,12 +1430,174 @@ void ChainBallTrooper_Draw(int k) {
     SpriteDraw_Shadow_custom(k, &info, kSoldier_DrawShadow[sprite_D[k]]);
 }
 
-void Sprite_6B_CannonTrooper(int k) {
+void CannonGuard_Wait(int k) {  // 85ac24
+  sprite_A[k] = 0;
+  if (sprite_delay_main[k] != 0)
+    return;
+  sprite_ai_state[k]++;
+  sprite_delay_main[k] = 0x60;
+  CannonGuard_FaceLink(k);
+}
+
+void CannonGuard_FaceLink(int k) {  // 85ac34
+  uint8 old_dir = sprite_D[k];
+  sprite_D[k] = Sprite_DirectionToFaceLink(k, NULL);
+  if (old_dir != sprite_D[k] && !((old_dir ^ sprite_D[k]) & 2))
+    sprite_delay_aux1[k] = 12;
+}
+
+void CannonGuard_Charge(int k) {  // 85ac52
+  uint8 delay = sprite_delay_main[k];
+  if (delay == 0) {
+    CannonTrooper_SpawnCannonBall(k);
+    return;
+  }
+  sprite_A[k] = delay < 0x30 ? 2 : 0;
+}
+
+void CannonTrooper_SpawnCannonBall(int k) {  // 85ac7b
+  static const int8 kCannonTrooper_Spawn_X[4] = {16, -16, 0, 0};
+  static const int8 kCannonTrooper_Spawn_Y[4] = {0, 0, 8, -16};
+  static const int8 kCannonTrooper_Spawn_Xvel[4] = {24, -24, 0, 0};
+  static const int8 kCannonTrooper_Spawn_Yvel[4] = {0, 0, 24, -24};
+
+  sprite_ai_state[k]++;
+  sprite_delay_main[k] = 4;
+
+  SpriteSpawnInfo info;
+  int j = Sprite_SpawnDynamically(k, 0x6B, &info);
+  if (j < 0)
+    return;
+  SpriteSfx_QueueSfx3WithPan(k, 0x7);
+  sprite_C[j] = 1;
+  int dir = sprite_D[k];
+  Sprite_SetX(j, info.r0_x + kCannonTrooper_Spawn_X[dir]);
+  Sprite_SetY(j, info.r2_y + kCannonTrooper_Spawn_Y[dir]);
+  sprite_x_vel[j] = kCannonTrooper_Spawn_Xvel[dir];
+  sprite_y_vel[j] = kCannonTrooper_Spawn_Yvel[dir];
+  sprite_flags2[j] = sprite_flags2[j] & 0xf0 | 1;
+  sprite_flags3[j] |= 0x47;
+  sprite_defl_bits[j] |= 0x44;
+  sprite_delay_main[j] = 0x20;
+}
+
+void CannonGuard_Fire(int k) {  // 85acf2
+  static const int8 kCannonGuard_Fire_Xvel[4] = {-32, 32, 0, 0};
+  static const int8 kCannonGuard_Fire_Yvel[4] = {0, 0, -32, 32};
+
+  if (sprite_delay_main[k] == 0) {
+    sprite_ai_state[k]++;
+    sprite_delay_main[k] = 0x20;
+  }
+  int dir = sprite_D[k];
+  sprite_x_vel[k] = kCannonGuard_Fire_Xvel[dir];
+  sprite_y_vel[k] = kCannonGuard_Fire_Yvel[dir];
+  Sprite_MoveXY(k);
+}
+
+void CannonGuard_Recoil(int k) {  // 85ad12
+  if (sprite_delay_main[k] == 0) {
+    sprite_ai_state[k]++;
+    sprite_delay_main[k] = 0x10;
+  }
+}
+
+void CannonGuard_Recover(int k) {  // 85ad28
+  static const int8 kCannonGuard_Recover_Xvel[4] = {8, -8, 0, 0};
+  static const int8 kCannonGuard_Recover_Yvel[4] = {0, 0, 8, -8};
+
+  if (sprite_delay_main[k] == 0) {
+    sprite_ai_state[k] = 0;
+    sprite_delay_main[k] = 0x80;
+  }
+  int dir = sprite_D[k];
+  sprite_x_vel[k] = kCannonGuard_Recover_Xvel[dir];
+  sprite_y_vel[k] = kCannonGuard_Recover_Yvel[dir];
+  Sprite_MoveXY(k);
+  sprite_A[k] = frame_counter >> 2 & 1;
+}
+
+void SpriteDraw_CannonGuard(int k) {  // 85aef9
+  static const uint8 kCannonGuard_Base[4] = {9, 3, 0, 6};
+  static const int16 kCannonGuard_X[60] = {
+    -4, 4, 0, 0, 0, -4, 4, 0, 0, 0,
+    -4, 4, 0, 0, 12, 4, 4, -8, -8, -8,
+    4, 4, -8, -8, -8, 4, 4, -8, 9, 9,
+    0, -4, 4, 0, 0, 0, -4, 4, 0, 0,
+    0, -4, 4, 0, -5, -4, -4, 8, 8, 8,
+    -4, -4, 8, 8, 8, -4, -4, 8, -1, -1,
+  };
+  static const int16 kCannonGuard_Y[60] = {
+    0, 0, -9, 7, 7, 0, 0, -9, 7, 7,
+    0, 0, -9, 7, -3, 0, -9, 0, 0, 0,
+    0, -9, 0, 0, 0, 0, -9, 0, 0, 0,
+    -12, 0, 0, -9, -9, -12, 0, 0, -9, -9,
+    -12, 0, 0, -9, -3, 0, -9, 0, 0, 0,
+    0, -9, 0, 0, 0, 0, -9, 0, 0, 0,
+  };
+  static const uint8 kCannonGuard_Char[60] = {
+    0x46, 0x46, 0x00, 0x24, 0x24, 0x48, 0x49, 0x00, 0x24, 0x24,
+    0x46, 0x06, 0x00, 0x24, 0x2f, 0x4e, 0x02, 0x26, 0x26, 0x26,
+    0x60, 0x02, 0x26, 0x26, 0x26, 0x08, 0x02, 0x26, 0x2f, 0x2f,
+    0x28, 0x64, 0x64, 0x04, 0x04, 0x28, 0x66, 0x67, 0x04, 0x04,
+    0x28, 0x0a, 0x64, 0x04, 0x2f, 0x4e, 0x02, 0x26, 0x26, 0x26,
+    0x60, 0x02, 0x26, 0x26, 0x26, 0x08, 0x02, 0x26, 0x2f, 0x2f,
+  };
+  static const uint8 kCannonGuard_Flags[60] = {
+    0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x40, 0x00, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
+    0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
+  };
+  static const uint8 kCannonGuard_Ext[60] = {
+    0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02,
+    0x02, 0x02, 0x02, 0x02, 0x00, 0x02, 0x02, 0x02, 0x02, 0x02,
+    0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x00, 0x00,
+    0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02,
+    0x02, 0x02, 0x02, 0x02, 0x00, 0x02, 0x02, 0x02, 0x02, 0x02,
+    0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x00, 0x00,
+  };
+
+  PrepOamCoordsRet info;
+  if (Sprite_PrepOamCoordOrDoubleRet(k, &info))
+    return;
+
+  int base = (kCannonGuard_Base[sprite_D[k]] + sprite_A[k]) * 5;
+  OamEnt *oam = GetOamCurPtr();
+  for (int i = 4; i >= 0; i--, oam++) {
+    int j = base + i;
+    uint8 ch = kCannonGuard_Char[j];
+    uint8 flags = kCannonGuard_Flags[j] | info.flags;
+    if ((uint8)(ch - 0x24) < 5)
+      flags = flags & 0xf1 | 0x06;
+    SetOamHelper0(oam, info.x + kCannonGuard_X[j], info.y + kCannonGuard_Y[j],
+                  ch, flags, kCannonGuard_Ext[j]);
+  }
+}
+
+void Sprite_6B_CannonTrooper(int k) {  // 85abe4
   if (sprite_C[k] != 0) {
     Sprite_Cannonball(k);
     return;
   }
-  assert(0);
+  uint8 dir = sprite_D[k];
+  if (sprite_delay_aux1[k] != 0)
+    sprite_D[k] = kSoldier_DirectionLockSettings[dir];
+  SpriteDraw_CannonGuard(k);
+  sprite_D[k] = dir;
+
+  if (Sprite_ReturnIfInactive(k))
+    return;
+  Sprite_CheckDamageToAndFromLink(k);
+  switch (sprite_ai_state[k]) {
+  case 0: CannonGuard_Wait(k); break;
+  case 1: CannonGuard_Charge(k); break;
+  case 2: CannonGuard_Fire(k); break;
+  case 3: CannonGuard_Recoil(k); break;
+  case 4: CannonGuard_Recover(k); break;
+  }
 }
 
 void Bee_PutInBottle(int k) {
@@ -2127,7 +2304,8 @@ void MasterSword_Main(int k) {  // 8588d6
     if (!sprite_delay_main[k]) {
       save_ow_event_info[BYTE(overworld_screen_index)] |= 0x40;
       item_receipt_method = 0;
-      Link_ReceiveItem(1, 0);
+      Link_ReceiveItem(ModSeedImport_FixedItem(
+          "fixed:PedestalSword", 1), 0);
       savegame_map_icons_indicator = 5;
       link_unk_master_sword = 0;
       sprite_ai_state[k] = 5;
@@ -4055,9 +4233,11 @@ void Sprite_51_ArmosStatue(int k) {  // 85b703
       sprite_flags3[k] &= ~0x40;
       sprite_oam_flags[k] = 0xb;
     } else {
+      uint16 lx, ly;
+      SharedWorld_LinkPosFor(Sprite_GetX(k), Sprite_GetY(k), &lx, &ly);
       if (!((k ^ frame_counter) & 3) &&
-          (uint16)(link_x_coord - cur_sprite_x + 31) < 62 &&
-          (uint16)(link_y_coord + 8 - cur_sprite_y + 48) < 88 && !sprite_delay_main[k]) {
+          (uint16)(lx - cur_sprite_x + 31) < 62 &&
+          (uint16)(ly + 8 - cur_sprite_y + 48) < 88 && !sprite_delay_main[k]) {
         sprite_delay_main[k] = 48;
         SpriteSfx_QueueSfx2WithPan(k, 0x22);
       }
@@ -4174,14 +4354,17 @@ void Sprite_4C_Geldman(int k) {  // 85b8b3
       sprite_ai_state[k] = 1;
     }
     break;
-  case 1:  // wait
+  case 1: {  // wait
+    uint16 lx, ly;
+    SharedWorld_LinkPosFor(Sprite_GetX(k), Sprite_GetY(k), &lx, &ly);
     if (!((k ^ frame_counter) & 7) &&
-        (uint16)(link_x_coord - cur_sprite_x + 0x30) < 0x60 &&
-        (uint16)(link_y_coord - cur_sprite_y + 0x30) < 0x60) {
+        (uint16)(lx - cur_sprite_x + 0x30) < 0x60 &&
+        (uint16)(ly - cur_sprite_y + 0x30) < 0x60) {
       sprite_ai_state[k] = 2;
       sprite_delay_main[k] = 31;
     }
     break;
+  }
   case 2:  // emerge
     if (!sprite_delay_main[k]) {
       sprite_ai_state[k] = 3;
@@ -4563,19 +4746,21 @@ void Sprite_41_BlueGuard(int k) {  // 85c155
 
 void Probe(int k) {  // 85c15d
   SpriteAddXY(k, (int8)sprite_x_vel[k], (int8)sprite_y_vel[k]);
+  uint16 lx, ly;
+  SharedWorld_LinkPosFor(Sprite_GetX(k), Sprite_GetY(k), &lx, &ly);
   bool is_close;
   if (sprite_type[sprite_C[k] - 1] == 0xce) {
     // parent is blind the thief?
-    uint16 x = cur_sprite_x - link_x_coord + 16;
-    uint16 y = link_y_coord - cur_sprite_y + 24;
+    uint16 x = cur_sprite_x - lx + 16;
+    uint16 y = ly - cur_sprite_y + 24;
     is_close = (x < 32 && y < 32);
   } else {
     if (Probe_CheckTileSolidity(k) && sprite_tiletype != 9 || link_cape_mode != 0) {
       sprite_state[k] = 0;
       return;
     }
-    uint16 x = cur_sprite_x - link_x_coord;
-    uint16 y = cur_sprite_y - link_y_coord;
+    uint16 x = cur_sprite_x - lx;
+    uint16 y = cur_sprite_y - ly;
     is_close = (x < 16 && y < 16 && sprite_floor[k] == link_is_on_lower_level);
   }
   if (is_close) {
@@ -5058,8 +5243,10 @@ agitated_jump_to:
       sprite_D[k] = sprite_head_dir[k] = j = Sprite_DirectionToFaceLink(k, NULL);
       if (sprite_type[k] == 0x48)
         j += 4;
-      uint16 x = link_x_coord + kSolderThrowing_Xd[j];
-      uint16 y = link_y_coord + kSolderThrowing_Yd[j];
+      uint16 lx, ly;
+      SharedWorld_LinkPosFor(Sprite_GetX(k), Sprite_GetY(k), &lx, &ly);
+      uint16 x = lx + kSolderThrowing_Xd[j];
+      uint16 y = ly + kSolderThrowing_Yd[j];
       ProjectSpeedRet pt = Sprite_ProjectSpeedTowardsLocation(k, x, y, 24);
       sprite_x_vel[k] = pt.x;
       sprite_y_vel[k] = pt.y;
@@ -5644,7 +5831,8 @@ void Priest_RunRescueCutscene(int k) {  // 85dd63
 void Priest_Chillin(int k) {  // 85dde5
   sprite_head_dir[k] = Sprite_DirectionToFaceLink(k, NULL) ^ 3;
   int m = (link_which_pendants & 7) == 7 ? 0x1a :
-          savegame_map_icons_indicator >= 3 ? 0x19 : 0x16;
+          savegame_map_icons_indicator >= 3 ? 0x19 :
+          0x16;
   int j = Sprite_ShowSolicitedMessage(k, m);
   if (j & 0x100) {
     sprite_D[k] = sprite_head_dir[k] = (uint8)j;
@@ -5730,7 +5918,7 @@ void Uncle_InPassage(int k) {  // 85df19
     break;
   case 1:  // GiveSwordAndShield
     item_receipt_method = 0;
-    Link_ReceiveItem(0, 0);
+    Link_ReceiveItem(ModSeedImport_UncleItem(0), 0);
     sprite_ai_state[k]++;
     sprite_graphics[k] = 1;
     which_starting_point = 3;
@@ -5865,7 +6053,8 @@ void Sprite_Witch(int k) {  // 85e3fb
   case 1:  // grant cane of byrna
     sprite_ai_state[k] = 0;
     item_receipt_method = 0;
-    Link_ReceiveItem(0x18, 0);
+    Link_ReceiveItem(ModSeedImport_FixedItem(
+        "fixed:SpriteItemValues:WitchItem", 0x18), 0);
     break;
   }
 }
@@ -6384,7 +6573,8 @@ void Sprite_E7_Mushroom(int k) {  // 85ee78
   if (Sprite_CheckDamageToLink_same_layer(k)) {
     sprite_state[k] = 0;
     item_receipt_method = 0;
-    Link_ReceiveItem(0x29, 0);
+    Link_ReceiveItem(ModSeedImport_FixedItem(
+        "fixed:SpriteItemValues:MushroomItem", 0x29), 0);
   } else if ((frame_counter & 0x1f) == 0) {
     sprite_oam_flags[k] ^= 0x40;
   }
@@ -6448,7 +6638,7 @@ void Sprite_HeartContainer(int k) {  // 85ef47
   sprite_state[k] = 0;
   if (sprite_A[k]) {
     item_receipt_method = 2;
-    Link_ReceiveItem(0x3e, 0);
+    Link_ReceiveItem(ModSeedImport_BossItem(dungeon_room_index, 0x3e), 0);
     dung_savegame_state_bits |= 0x8000;
     return;
   }
@@ -6490,14 +6680,24 @@ void Sprite_HeartPiece(int k) {  // 85f020
   if (sprite_delay_aux4[k] || !Sprite_CheckDamageToLink_same_layer(k))
     return;
 
-  link_heart_pieces = link_heart_pieces + 1 & 3;
-  if (link_heart_pieces == 0) {
-    Link_CancelDash();
+  uint8 seed_item = ModSeedImport_HeartPieceItem(
+      player_is_indoors, dungeon_room_index, BYTE(overworld_screen_index),
+      link_x_coord, 0x17);
+  if (seed_item != 0x17) {
     item_receipt_method = 0;
-    Link_ReceiveItem(0x26, 0);
+    if (seed_item == 0x26)
+      link_heart_pieces = link_heart_pieces + 1 & 3;
+    Link_ReceiveItem(seed_item, 0);
   } else {
-    SpriteSfx_QueueSfx3WithPan(k, 0x2d);
-    Sprite_ShowMessageUnconditional(kHeartPieceMsg[link_heart_pieces]);
+    link_heart_pieces = link_heart_pieces + 1 & 3;
+    if (link_heart_pieces == 0) {
+      Link_CancelDash();
+      item_receipt_method = 0;
+      Link_ReceiveItem(0x26, 0);
+    } else {
+      SpriteSfx_QueueSfx3WithPan(k, 0x2d);
+      Sprite_ShowMessageUnconditional(kHeartPieceMsg[link_heart_pieces]);
+    }
   }
   sprite_state[k] = 0;
   HeartUpgrade_SetObtainedFlag(k);
@@ -6668,7 +6868,7 @@ void BombosTablet(int k) {  // 85f355
     return;
 
   int j = 1;
-  if (!(hud_cur_item == kHudItem_BookMudora && (filtered_joypad_H & 0x40)) && (j = 0, !(filtered_joypad_L & 0x80)))
+  if (!Hud_IsItemButtonPressed(kHudItem_BookMudora) && (j = 0, !(filtered_joypad_L & 0x80)))
     return;
   if (j) {
     player_handler_timer = 0;
@@ -6693,7 +6893,7 @@ void EtherTablet(int k) {  // 85f3c4
     return;
 
   int j = 1;
-  if (!(hud_cur_item == kHudItem_BookMudora && (filtered_joypad_H & 0x40)) && (j = 0, !(filtered_joypad_L & 0x80)))
+  if (!Hud_IsItemButtonPressed(kHudItem_BookMudora) && (j = 0, !(filtered_joypad_L & 0x80)))
     return;
 
   if (j) {
@@ -6790,7 +6990,8 @@ void Sprite_BagOfPowder(int k) {  // 85f644
     return;
   Link_CancelDash();
   item_receipt_method = 0;
-  Link_ReceiveItem(0xd, 0);
+  Link_ReceiveItem(ModSeedImport_FixedItem(
+      "fixed:SpriteItemValues:WitchItem", 0xd), 0);
   sprite_state[k] = 0;
 }
 
@@ -7006,11 +7207,19 @@ void Sprite_BonkKey(int k) {  // 85fc04
       sprite_floor[k] = link_is_on_lower_level;
     break;
   case 3:  // give to player
-    link_num_keys++;
+  {
+    uint8 item = ModSeedImport_BonkKeyItem(dungeon_room_index, 0x24);
+    if (item == 0x24) {
+      link_num_keys++;
+    } else {
+      item_receipt_method = 0;
+      Link_ReceiveItem(item, 0);
+    }
     sprite_state[k] = 0;
     dung_savegame_state_bits |= (sprite_die_action[k] ? 0x2000 : 0x4000);
     SpriteSfx_QueueSfx3WithPan(k, 0x2f);
     break;
+  }
   }
 }
 
@@ -7050,7 +7259,8 @@ void Sprite_BookOfMudora(int k) {  // 85fc9e
   case 3:  // give to player
     Link_CancelDash();
     item_receipt_method = 0;
-    Link_ReceiveItem(0x1d, 0);
+    Link_ReceiveItem(ModSeedImport_FixedItem(
+        "fixed:SpriteItemValues:LibraryItem", 0x1d), 0);
     sprite_state[k] = 0;
     break;
   }
@@ -7640,8 +7850,15 @@ void SpritePrep_Shopkeeper(int k) {  // 868bf1
   sprite_flags2[k] |= 2;
   sprite_oam_flags[k] |= 12;
   sprite_flags3[k] |= 16;
-  static const uint8 kShopKeeperWhere[13] = {0xf, 0x10, 0, 6, 0x18, 0x12, 0x1e, 0xff, 0x1f, 0x23, 0x24, 0x25, 0x27};
   uint8 room = BYTE(dungeon_room_index);
+  int shop_count;
+  const ModShopEntry *shop = ModShop_FindForRoom(room, &shop_count);
+  if (shop != NULL) {
+    for (int i = 0; i < shop_count; i++)
+      ShopKeeper_SpawnShopItemEntry(k, i, &shop[i]);
+    return;
+  }
+  static const uint8 kShopKeeperWhere[13] = {0xf, 0x10, 0, 6, 0x18, 0x12, 0x1e, 0xff, 0x1f, 0x23, 0x24, 0x25, 0x27};
   int j = FindInByteArray(kShopKeeperWhere, room, 13);
   switch (j) {
   case 0:
@@ -8256,6 +8473,10 @@ void SpritePrep_KeySetItemDrop(int k) {  // 869267
 
 void SpriteActive_Main(int k) {  // 869271
   uint8 type = sprite_type[k];
+  if (g_mod_sprite_override_mask[type]) {
+    ModSpriteOverride_Run(type, k, kSpriteActiveRoutines[type]);
+    return;
+  }
   kSpriteActiveRoutines[type](k);
 }
 
@@ -10181,7 +10402,8 @@ void Smithy_Main(int k) {  // 86b34e
     sprite_ai_state[k] = 0;
     sprite_ai_state[sprite_E[k]] = 0;
     item_receipt_method = 0;
-    Link_ReceiveItem(2, 0);
+    Link_ReceiveItem(ModSeedImport_FixedItem(
+        "fixed:SmithItem", 2), 0);
     sram_progress_indicator_3 &= ~0x80;
     break;
   case 7:  //
@@ -11107,8 +11329,15 @@ void Sprite_3A_MagicBat(int k) {  // 86c044
       Palette_Restore_BG_And_HUD();
       flag_update_cgram_in_nmi++;
       sprite_ai_state[k]++;
-      link_magic_consumption = 1;
-      Hud_RefreshIcon();
+      uint8 item = ModSeedImport_FixedItem(
+          "fixed:SpriteItemValues:MagicBatItem", 0x4E);
+      if (item == 0x4E) {
+        link_magic_consumption = 1;
+        Hud_RefreshIcon();
+      } else {
+        item_receipt_method = 0;
+        Link_ReceiveItem(item, 0);
+      }
     } else if (sprite_delay_aux1[k] == 0x10) {
       intro_times_pal_flash = 0x10;
     }
@@ -14222,9 +14451,11 @@ void Sprite_D0_Lynel(int k) {  // 9d866a
       static const int8 kLynel_Xtarget[4] = {-96, 96, 0, 0};
       static const int8 kLynel_Ytarget[4] = {8, 8, -96, 112};
       int j = sprite_D[k];
-      int x = link_x_coord + kLynel_Xtarget[j];
+      uint16 lx, ly;
+      SharedWorld_LinkPosFor(Sprite_GetX(k), Sprite_GetY(k), &lx, &ly);
+      int x = lx + kLynel_Xtarget[j];
       sprite_A[k] = x, sprite_B[k] = x >> 8;
-      int y = link_y_coord + kLynel_Ytarget[j];
+      int y = ly + kLynel_Ytarget[j];
       sprite_C[k] = y, sprite_E[k] = y >> 8;
       sprite_ai_state[k]++;
       sprite_delay_main[k] = 80;
@@ -15768,6 +15999,7 @@ void Blind_CheckBumpDamage(int k) {  // 9da6c0
       (uint16)(link_y_coord - cur_sprite_y) < 28 &&
       !(countdown_for_blink | link_disable_sprite_damage)) {
     link_auxiliary_state = 1;
+    g_mod_link_damage_source = kModLinkDamage_Sprite;
     link_give_damage = 8;
     link_incapacitated_timer = 16;
     link_actual_vel_x ^= 255;
@@ -16126,6 +16358,7 @@ void Sprite_TrinexxD_Draw(int k) {  // 9daf84
         !sign8(sprite_ai_state[k]) &&
         !(countdown_for_blink | link_disable_sprite_damage | submodule_index | flag_unk1)) {
       link_auxiliary_state = 1;
+      g_mod_link_damage_source = kModLinkDamage_Sprite;
       link_give_damage = 8;
       link_incapacitated_timer = 16;
       link_actual_vel_x ^= 255;
@@ -16337,6 +16570,7 @@ void Trinexx_HandleShellCollision(int k) {  // 9db3e6
   uint16 y = sprite_C[k] | sprite_G[k] << 8;
   if ((uint16)(x - link_x_coord + 40) < 80 && (uint16)(y - link_y_coord + 16) < 64 && !(countdown_for_blink | link_disable_sprite_damage)) {
     link_auxiliary_state = 1;
+    g_mod_link_damage_source = kModLinkDamage_Sprite;
     link_give_damage = 8;
     link_incapacitated_timer = 16;
     ProjectSpeedRet pt = Sprite_ProjectSpeedTowardsLink(k, 32);
@@ -16441,7 +16675,7 @@ void SpriteDraw_TrinexxRockHeadAndBody(int k) {  // 9db587
     SetOamPlain(oam + 1, x, y + 16, 0x2a, f, 2);
   }
 
-  oam = (OamEnt *)&g_ram[0x800] + 91;
+  oam = oam_buf + 91;
   int g = overlord_x_lo[2];
   for (int i = 0; i < 5; i++, oam++) {
     int j = g * 5 + i;
@@ -18105,8 +18339,10 @@ void Sprite_Raven(int k) {  // 9ddd85
   case 0: { // inwait
     PairU8 r = Sprite_IsRightOfLink(k);
     sprite_oam_flags[k] = sprite_oam_flags[k] & ~0x40 | r.a * 0x40;
-    int x = link_x_coord - cur_sprite_x;
-    int y = link_y_coord - cur_sprite_y;
+    uint16 lx, ly;
+    SharedWorld_LinkPosFor(Sprite_GetX(k), Sprite_GetY(k), &lx, &ly);
+    int x = lx - cur_sprite_x;
+    int y = ly - cur_sprite_y;
     if ((uint16)(x + 0x50 + (x >= 0)) < 0xa0 && (uint16)(y + 0x58 + (y >= 0)) < 0xa0) {
       sprite_ai_state[k]++;
       sprite_delay_main[k] = 24;
@@ -18718,10 +18954,12 @@ void Sprite_ArmosCrusher(int k) {  // 9def7e
       Sprite_ApplySpeedTowardsLink(k, 32);
       sprite_z_vel[k] = 32;
       sprite_G[k]++;
-      sprite_B[k] = link_x_coord;
-      sprite_C[k] = link_x_coord >> 8;
-      sprite_E[k] = link_y_coord;
-      sprite_head_dir[k] = link_y_coord >> 8;
+      uint16 lx, ly;
+      SharedWorld_LinkPosFor(Sprite_GetX(k), Sprite_GetY(k), &lx, &ly);
+      sprite_B[k] = lx;
+      sprite_C[k] = lx >> 8;
+      sprite_E[k] = ly;
+      sprite_head_dir[k] = ly >> 8;
       SpriteSfx_QueueSfx2WithPan(k, 0x20);
     }
     break;
@@ -18779,6 +19017,7 @@ void Sprite_EvilBarrier(int k) {  // 9df06b
     link_electrocute_on_touch = 64;
     link_incapacitated_timer = 12;
     link_auxiliary_state = 1;
+    g_mod_link_damage_source = kModLinkDamage_Sprite;
     link_give_damage = 2;
     link_actual_vel_x = 0;
     link_actual_vel_y = 48;
@@ -19785,8 +20024,10 @@ void Sprite_MadBatterBolt(int k) {  // 9e8a96
     int j = ++sprite_subtype2[k];
     if (!(j & 7))
       sound_effect_2 = 48;
-    Sprite_SetX(k, link_x_coord + kMadderBolt_X[j >> 2 & 7]);
-    Sprite_SetY(k, link_y_coord + kMadderBolt_Y[j >> 4 & 7]);
+    uint16 lx, ly;
+    SharedWorld_LinkPosFor(Sprite_GetX(k), Sprite_GetY(k), &lx, &ly);
+    Sprite_SetX(k, lx + kMadderBolt_X[j >> 2 & 7]);
+    Sprite_SetY(k, ly + kMadderBolt_Y[j >> 4 & 7]);
   }
 }
 
@@ -19888,12 +20129,14 @@ void Sprite_AA_Pikit(int k) {  // 9e8bbf
           link_rupees_goal--;
         else
           sprite_G[k] = 0;
-      } else {
+      } else if (MOD_DECIDE(kModDecide_PikitStealShield, true, k)) {
         sprite_subtype[k] = link_shield_type;
         if (link_shield_type != 0 && link_shield_type != 3)
           link_shield_type = 0;
         else
           sprite_G[k] = 0;
+      } else {
+        sprite_G[k] = 0;
       }
     }
     break;
@@ -20085,9 +20328,11 @@ void Sprite_A7_Stalfos(int k) {  // 9e906c
 void Stalfos_Skellington(int k) {  // 9e90b5
   static const uint8 kStalfos_AnimState2[4] = {8, 9, 10, 11};
   static const uint8 kStalfos_CheckDir[4] = {3, 2, 1, 0};
+  uint16 lx, ly;
+  SharedWorld_LinkPosFor(Sprite_GetX(k), Sprite_GetY(k), &lx, &ly);
   if (sprite_state[k] == 9 &&
-      (uint16)(link_x_coord - cur_sprite_x + 40) < 80 &&
-      (uint16)(link_y_coord - cur_sprite_y + 48) < 80 &&
+      (uint16)(lx - cur_sprite_x + 40) < 80 &&
+      (uint16)(ly - cur_sprite_y + 48) < 80 &&
       player_oam_y_offset != 0x80 &&
       !(sprite_z[k] | sprite_pause[k]) &&
       sprite_floor[k] == link_is_on_lower_level) {
@@ -20338,8 +20583,10 @@ void GenerateIceball(int k) {  // 9e94dd
   SpriteSpawnInfo info;
   int j = Sprite_SpawnDynamically(k, 0xa4, &info);
   if (j >= 0) {
-    Sprite_SetX(j, link_x_coord);
-    Sprite_SetY(j, link_y_coord);
+    uint16 lx, ly;
+    SharedWorld_LinkPosFor(Sprite_GetX(k), Sprite_GetY(k), &lx, &ly);
+    Sprite_SetX(j, lx);
+    Sprite_SetY(j, ly);
     sprite_z[j] = -32;
     sprite_C[j] = -32;
     SpriteSfx_QueueSfx2WithPan(j, 0x20);
@@ -21211,7 +21458,9 @@ void Sprite_95_LaserEyeLeft(int k) {  // 9ea541
     if (sprite_head_dir[k] == 0 && sprite_D[k] != kLaserEye_Dirs[link_direction_facing >> 1]) {
       sprite_graphics[k] = 0;
     } else {
-      uint16 j = (sprite_D[k] < 2) ? link_y_coord - cur_sprite_y : link_x_coord - cur_sprite_x;
+      uint16 lx, ly;
+      SharedWorld_LinkPosFor(Sprite_GetX(k), Sprite_GetY(k), &lx, &ly);
+      uint16 j = (sprite_D[k] < 2) ? ly - cur_sprite_y : lx - cur_sprite_x;
       if ((uint16)(j + 16) < 32) {
         sprite_delay_main[k] = 32;
         sprite_ai_state[k] = 1;
@@ -24043,8 +24292,10 @@ void Bee_Main(int k) {  // 9edd45
     sprite_A[k] -= 8;
 
   if (sprite_delay_main[k] == 0) {
-    uint16 x = link_x_coord + (GetRandomNumber() & 3) * 5;
-    uint16 y = link_y_coord + (GetRandomNumber() & 3) * 5;
+    uint16 lx, ly;
+    SharedWorld_LinkPosFor(Sprite_GetX(k), Sprite_GetY(k), &lx, &ly);
+    uint16 x = lx + (GetRandomNumber() & 3) * 5;
+    uint16 y = ly + (GetRandomNumber() & 3) * 5;
     ProjectSpeedRet pt = Sprite_ProjectSpeedTowardsLocation(k, x, y, 20);
     sprite_y_vel[k] = pt.y;
     sprite_x_vel[k] = pt.x;
@@ -24173,14 +24424,14 @@ void Sprite_B3_PedestalPlaque(int k) {  // 9ee044
   Sprite_PrepOamCoord(k, &info);
   if (Sprite_ReturnIfInactive(k))
     return;
-  if (!flag_is_link_immobilized && Sprite_CheckIfLinkIsBusy())
+  if (flag_is_link_immobilized || Sprite_CheckIfLinkIsBusy())
     return;
 
   link_position_mode &= ~0x20;
   if (BYTE(overworld_screen_index) != 48) {
     if (link_direction_facing || !Sprite_CheckDamageToLink_same_layer(k))
       return;
-    if (hud_cur_item != kHudItem_BookMudora || !(filtered_joypad_H & 0x40)) {
+    if (!Hud_IsItemButtonPressed(kHudItem_BookMudora)) {
       if (!(filtered_joypad_L & 0x80))
         return;
       Sprite_ShowMessageUnconditional(0xb6);
@@ -24193,7 +24444,7 @@ void Sprite_B3_PedestalPlaque(int k) {  // 9ee044
   } else {
     if (link_direction_facing || !Sprite_CheckDamageToLink_same_layer(k))
       return;
-    if (hud_cur_item != kHudItem_BookMudora || !(filtered_joypad_H & 0x40)) {
+    if (!Hud_IsItemButtonPressed(kHudItem_BookMudora)) {
       if (!(filtered_joypad_L & 0x80))
         return;
       Sprite_ShowMessageUnconditional(0xbc);
@@ -24265,7 +24516,7 @@ void Sprite_BombShop_Bomb(int k) {  // 9ee190
   if (!ShopItem_CheckForAPress(k))
     return;
 
-  if (link_item_bombs != kMaxBombsForLevel[link_bomb_upgrades]) {
+  if (link_item_bombs != ModHooks_MaxBombsForLevel(link_bomb_upgrades)) {
     if (!ShopItem_HandleCost(100)) {
       Sprite_ShowMessageUnconditional(0x17c);
       ShopItem_PlayBeep(k);
@@ -24779,8 +25030,10 @@ play_sound:
       PinkBall_Distress(k);
       sprite_graphics[k] = (k ^ frame_counter) >> 3 & 1;
       if (!((k ^ frame_counter) & 0x3f)) {
-        uint16 x = (link_x_coord & 0xff00) | GetRandomNumber();
-        uint16 y = (link_y_coord & 0xff00) | GetRandomNumber();
+        uint16 lx, ly;
+        SharedWorld_LinkPosFor(Sprite_GetX(k), Sprite_GetY(k), &lx, &ly);
+        uint16 x = (lx & 0xff00) | GetRandomNumber();
+        uint16 y = (ly & 0xff00) | GetRandomNumber();
         ProjectSpeedRet pt = Sprite_ProjectSpeedTowardsLocation(k, x, y, 8);
         sprite_B[k] = pt.x;
         sprite_A[k] = pt.y;
@@ -24987,6 +25240,7 @@ void Sprite_BB_Shopkeeper(int k) {  // 9eeeef
   case 11: ShopItem_Arrows(k); break;
   case 12: ShopItem_Bombs(k); break;
   case 13: ShopItem_Bee(k); break;
+  case kShopItemSubtype_Custom: ShopItem_Custom(k); break;
   }
 }
 
@@ -25068,7 +25322,14 @@ void NiceThiefWithGift(int k) {  // 9ef038
     if (!(dung_savegame_state_bits & 0x4000)) {
       dung_savegame_state_bits |= 0x4000;
       sprite_ai_state[k] = 2;
-      ShopItem_HandleReceipt(k, 0x46);
+      uint8 item = 0x46;
+      if (dungeon_room_index == 291)
+        item = ModSeedImport_FixedItem(
+            "fixed:SpriteItemValues:RupeeNPC_MoldormCave", item);
+      else if (dungeon_room_index == 286)
+        item = ModSeedImport_FixedItem(
+            "fixed:SpriteItemValues:RupeeNPC_NortheastDarkSwampCave", item);
+      ShopItem_HandleReceipt(k, item);
     } else {
       sprite_ai_state[k] = 0;
     }
@@ -25172,6 +25433,20 @@ void ShopKeeper_SpawnShopItem(int k, int pos, int what) {  // 9ef1b3
   sprite_flags2[j] |= 4;
 }
 
+static void ShopKeeper_SpawnShopItemEntry(int k, int pos,
+                                          const ModShopEntry *entry) {
+  static const int8 kShopKeeper_ItemX[3] = {-44, 8, 60};
+  SpriteSpawnInfo info;
+  int j = Sprite_SpawnDynamicallyEx(k, 0xbb, &info, 12);
+  assert(j >= 0);
+  sprite_ignore_projectile[j] = 1;
+  sprite_subtype2[j] = kShopItemSubtype_Custom;
+  ModShop_SetRuntime(j, entry);
+  Sprite_SetX(j, info.r0_x + kShopKeeper_ItemX[pos]);
+  Sprite_SetY(j, info.r2_y + 0x27);
+  sprite_flags2[j] |= 4;
+}
+
 void ShopItem_FighterShield(int k) {  // 9ef1f2
   SpriteDraw_ShopItem(k);
   if (Sprite_ReturnIfInactive(k))
@@ -25251,7 +25526,7 @@ void ShopItem_Arrows(int k) {  // 9ef2af
     return;
   Sprite_BehaveAsBarrier(k);
   if (ShopItem_CheckForAPress(k)) {
-    if (link_num_arrows == kMaxArrowsForLevel[link_arrow_upgrades]) {
+    if (link_num_arrows == ModHooks_MaxArrowsForLevel(link_arrow_upgrades)) {
       Sprite_ShowSolicitedMessage(k, 0x16e);
       ShopItem_PlayBeep(k);
     } else if (ShopItem_HandleCost(30)) {
@@ -25270,7 +25545,7 @@ void ShopItem_Bombs(int k) {  // 9ef2f0
     return;
   Sprite_BehaveAsBarrier(k);
   if (ShopItem_CheckForAPress(k)) {
-    if (link_item_bombs == kMaxBombsForLevel[link_bomb_upgrades]) {
+    if (link_item_bombs == ModHooks_MaxBombsForLevel(link_bomb_upgrades)) {
       Sprite_ShowSolicitedMessage(k, 0x16e);
       ShopItem_PlayBeep(k);
     } else if (ShopItem_HandleCost(50)) {
@@ -25307,7 +25582,7 @@ void ShopItem_HandleReceipt(int k, uint8 item) {  // 9ef366
   item_receipt_method = 0;
   Link_ReceiveItem(item, 0);
   int j = sprite_subtype2[k];
-  if (j >= 7) {
+  if (j >= kShopItemSubtype_First && j < kShopItemSubtype_Custom) {
     Sprite_ShowMessageUnconditional(kShopKeeper_GiveItemMsgs[j - 7]);
     ShopKeeper_RapidTerminateReceiveItem();
   }
@@ -25369,6 +25644,183 @@ void SpriteDraw_ShopItem(int k) {  // 9ef4ce
     { 4, 11, 0x0338, 0},
   };
   Sprite_DrawMultiplePlayerDeferred(k, &kShopKeeper_ItemWithPrice_Dmd[(sprite_subtype2[k] - 7) * 5], 5, NULL);
+}
+
+// The two sprites that make up each vanilla shop-item icon. The price is
+// drawn separately so a mod shop can use any value.
+static const DrawMultipleData kShopCustomIconDmd[7][2] = {
+  {{0,  0, 0x02c0, 2}, {0, 11, 0x036c, 2}},  // red potion
+  {{0,  0, 0x04ce, 2}, {4, 12, 0x0338, 0}},  // fighter shield
+  {{0,  0, 0x08cc, 2}, {4, 12, 0x0338, 0}},  // fire shield
+  {{4,  8, 0x0329, 0}, {4, 11, 0x0338, 0}},  // heart
+  {{0,  0, 0x04c4, 2}, {0, 11, 0x0338, 0}},  // arrows
+  {{0,  0, 0x04e8, 2}, {0, 11, 0x036c, 2}},  // bombs
+  {{4,  8, 0x0ff4, 0}, {4, 11, 0x0338, 0}},  // bee
+};
+
+static const int8 kShopPriceX3[3] = {-4, 4, 12};
+static const int8 kShopPriceX2[2] = {0, 8};
+
+static int ShopItem_CustomIconGroup(uint8 item) {
+  switch (item) {
+  case 0x2e: return 0;  // red potion
+  case 4: return 1;     // fighter shield
+  case 5: return 2;     // fire shield
+  case 0x42: return 3;  // heart
+  case 0x44: return 4;  // arrows
+  case 0x31: return 5;  // bombs
+  case 0x0e: return 6;  // bee
+  default: return 3;
+  }
+}
+
+static void ShopItem_InstallPriceDigits(void) {
+  // The HUD digits are tiles 0x90..0x99 in the background font. Copy them
+  // into sprite VRAM so the OAM price sprites can use a stable 0x30..0x39
+  // sequence for digits 0..9 regardless of which sprite pack is loaded.
+  for (int i = 0; i < 10; i++) {
+    uint16 *src = &g_zenv.vram[0x7000 + (0x90 + i) * 16];
+    uint16 *dst = &g_zenv.vram[0x4000 + (0x30 + i) * 16];
+    // The HUD glyphs use several palette indices. Re-map every opaque pixel
+    // to index 1 (white in sprite palette 1) so the price is readable against
+    // any shop background.
+    for (int row = 0; row < 8; row++) {
+      uint16 planes01 = src[row];
+      uint16 planes23 = src[8 + row];
+      uint16 opaque = planes01 | planes23;
+      dst[row] = (uint16)((opaque & 0xff) | (opaque >> 8));
+      dst[8 + row] = 0;
+    }
+  }
+}
+
+static int ShopItem_AddPrice(DrawMultipleData *dmd, int n, uint16 price, int y) {
+  if (price > 999)
+    price = 999;
+  uint8 digits[3] = {
+    (uint8)(price / 100),
+    (uint8)(price / 10 % 10),
+    (uint8)(price % 10),
+  };
+  if (price >= 100) {
+    for (int i = 0; i < 3; i++, n++) {
+      dmd[n].x = kShopPriceX3[i];
+      dmd[n].y = y;
+      dmd[n].char_flags = (uint16)(0x0200 | (0x30 + digits[i]));
+      dmd[n].ext = 0;
+    }
+  } else {
+    int first = price >= 10 ? 1 : 2;
+    for (int i = first; i < 3; i++, n++) {
+      dmd[n].x = kShopPriceX2[i - 1];
+      dmd[n].y = y;
+      dmd[n].char_flags = (uint16)(0x0200 | (0x30 + digits[i]));
+      dmd[n].ext = 0;
+    }
+  }
+  return n;
+}
+
+static int ShopItem_AddCustomIcon(DrawMultipleData *dmd, int n, int k,
+                                  uint8 item) {
+  uint16 icon[4 * 16];
+  if (!ModItems_GetIconGfx(item, icon))
+    return n;
+  // One 16x16 sprite per custom shop item. The three blocks are far enough
+  // apart for the three slots of a shop and stay clear of the price digits.
+  int base = 0x3a + (k % 3) * 0x20;
+  uint16 *dst = &g_zenv.vram[0x4000 + base * 16];
+  memcpy(dst, icon, 2 * 16 * sizeof(uint16));
+  memcpy(dst + 16 * 16, icon + 2 * 16, 2 * 16 * sizeof(uint16));
+  dmd[n].x = 0;
+  dmd[n].y = 0;
+  dmd[n].char_flags = (uint16)(0x0200 | base);
+  dmd[n].ext = 2;  // 16x16 OAM sprite
+  return n + 1;
+}
+
+static void ShopItem_DrawCustom(int k, const ModShopEntry *entry) {
+  DrawMultipleData dmd[8];
+  // Price first: the lower part of the 16x16 vanilla icons overlaps the
+  // price row, and the original table relies on the price winning OAM order.
+  ShopItem_InstallPriceDigits();
+  bool custom_item = ModItems_IsCustomId(entry->item);
+  int n = ShopItem_AddPrice(dmd, 0, entry->price, custom_item ? 16 : 27);
+  if (custom_item) {
+    n = ShopItem_AddCustomIcon(dmd, n, k, entry->item);
+  } else {
+    int group = ShopItem_CustomIconGroup(entry->item);
+    dmd[n++] = kShopCustomIconDmd[group][0];
+    dmd[n++] = kShopCustomIconDmd[group][1];
+  }
+  Sprite_DrawMultiplePlayerDeferred(k, dmd, n, NULL);
+}
+
+static bool ShopItem_CustomIsFull(const ModShopEntry *entry) {
+  if (ModItems_IsCustomId(entry->item))
+    return ModItems_CountForId(entry->item) >= ModItems_MaxForId(entry->item);
+  switch (entry->item) {
+  case 0x31:  // bombs
+    return link_item_bombs == ModHooks_MaxBombsForLevel(link_bomb_upgrades);
+  case 0x44:  // arrows
+    return link_num_arrows == ModHooks_MaxArrowsForLevel(link_arrow_upgrades);
+  case 0x42:  // heart
+    return link_health_current == link_health_capacity;
+  case 4:     // fighter shield
+    return link_shield_type != 0;
+  case 5:     // fire shield
+    return link_shield_type >= 2;
+  default:
+    return false;
+  }
+}
+
+static bool ShopItem_CustomNeedsBottle(uint8 item) {
+  return item == 0x2e || item == 0x0e;
+}
+
+void ShopItem_Custom(int k) {
+  ModShopEntry entry;
+  if (!ModShop_GetRuntime(k, &entry) ||
+      (entry.item >= kModItemIdBase && !ModItems_IsCustomId(entry.item))) {
+    sprite_state[k] = 0;
+    return;
+  }
+  ShopItem_DrawCustom(k, &entry);
+  if (Sprite_ReturnIfInactive(k))
+    return;
+  Sprite_BehaveAsBarrier(k);
+  if (!ShopItem_CheckForAPress(k))
+    return;
+
+  if (ShopItem_CustomNeedsBottle(entry.item) &&
+      Sprite_Find_EmptyBottle() < 0) {
+    Sprite_ShowMessageUnconditional(0x16d);
+    ShopItem_PlayBeep(k);
+    return;
+  }
+  if (ShopItem_CustomIsFull(&entry)) {
+    if (entry.item == 0x42) {
+      ShopItem_PlayBeep(k);
+    } else {
+      Sprite_ShowMessageUnconditional(0x16e);
+      ShopItem_PlayBeep(k);
+    }
+    return;
+  }
+  if (!ShopItem_HandleCost(entry.price)) {
+    Sprite_ShowMessageUnconditional(0x17c);
+    ShopItem_PlayBeep(k);
+    return;
+  }
+
+  sprite_state[k] = 0;
+  bool custom_item = ModItems_IsCustomId(entry.item);
+  if (custom_item)
+    ModItems_SetNextReceiveCount(entry.count);
+  ShopItem_HandleReceipt(k, entry.item);
+  if (custom_item)
+    ModItems_SetNextReceiveCount(0);
 }
 
 void Sprite_AC_Apple(int k) {  // 9ef515

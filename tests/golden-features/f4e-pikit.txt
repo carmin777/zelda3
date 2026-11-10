@@ -1,0 +1,10 @@
+compare: off
+ev 142 SpriteSpawn 12 34 0
+ev 178 SpriteSpawn 11 34 0
+ev 282 LinkDamage 16 112 0
+ev 282 SpriteSpawn 13 170 0
+ev 342 LinkDamage 16 96 0
+hook 725 Decide PikitStealShield 1 -> 0 arg 13
+hook 726 Decide PikitStealShield 1 -> 0 arg 13
+hook 898 Decide PikitStealShield 1 -> 0 arg 13
+final 1000 242b28b7

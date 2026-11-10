@@ -9,6 +9,7 @@
 #include <stdbool.h>
 #include "snes/saveload.h"
 typedef struct Ppu Ppu;
+typedef struct Snes Snes;
 
 #include "src/types.h"
 
@@ -46,6 +47,10 @@ enum {
 
 
 struct Ppu {
+  // --emu-rom runs a complete cartridge ROM (for example an ALttPR seed) and
+  // relaxes the PPU register asserts that the native game and the oracle rely
+  // on.  The flag is off everywhere else.
+  bool emuRomMode;
   bool lineHasSprites;
   uint8_t lastBrightnessMult;
   uint8_t lastMosaicModulo;
@@ -115,7 +120,15 @@ struct Ppu {
   int32_t m7startY;
 
   uint16_t oam[0x110];
-  
+
+  // Model B co-op only. Player 2's Link CHR (the per-frame contents of VRAM
+  // 0x4000..0x43ff) is kept in this shadow array instead of being written to
+  // the SNES VRAM, so player 1's Link keeps its own animation. OAM entries
+  // flagged in oamIsPlayer2 fetch tiles from linkChr. Both are all zero/off in
+  // normal play, so the original rendering path is unchanged.
+  uint16_t linkChr[0x400];
+  uint8_t oamIsPlayer2[128];
+
   // store 31 extra entries to remove the need for clamp
   uint8_t brightnessMult[32 + 31];
   uint8_t brightnessMultHalf[32 * 2];
@@ -127,7 +140,7 @@ struct Ppu {
   uint16_t vram[0x8000];
 };
 
-Ppu* ppu_init();
+Ppu* ppu_init(Snes* snes);
 void ppu_free(Ppu* ppu);
 void ppu_reset(Ppu* ppu);
 void ppu_handleVblank(Ppu* ppu);

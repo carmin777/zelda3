@@ -1,0 +1,146 @@
+# Estado do projeto engine/modloader
+
+| Fase | Estado | Notas |
+|---|---|---|
+| F0 bancada | ✅ mergeada | `tools/regress.sh`: 13 replays, ~1,07 M frames, 3m44s com -j2; teste negativo confirmou exit 3 na 1ª divergência; o passo `load-save-replay` confere que `--load` + `--save-replay` reproduz o hash |
+| F1-mapa | ✅ mergeado | `docs/engine/HOOKS-MAPA.md`, 8 citações conferidas |
+| F1 eventos | ✅ mergeada | 17 eventos, filtro ItemReceive, `--mod-trace`; regress verde com e sem trace |
+| F2 mod loader | ✅ mergeada | mod.json, override por nome (tamanho exato ou allow_resize), patches c/ expect, ZSPR, ModResolvePath; cJSON 1.7.18 conferido c/ upstream |
+| F3 scripting | ✅ mergeada | Lua 5.4 (lua54 do sistema), lua_State por mod, sandbox, API zelda.on/link/item/ram, limites 10M instruções e 32 MB por chamada/mod; NO_LUA=1 |
+| F4 engine | F4a ✅ (zelda.state), F4b ✅ (modkit parcial, base pt idêntica ao .dat), F4c ✅ (FrameDraw + zelda.draw, --screenshot) | plano aprovado 09/11/26 em `docs/engine/F4-PLANO.md` |
+
+## Como retomar
+
+- Agentes rodam desacoplados: `tools/agents/launch.sh <tarefa>`; esperar com
+  `tools/agents/wait.sh <tarefa>`. Log em `.agents/logs/`.
+- Sessão interrompida: o worktree `.agents/<tarefa>` guarda o trabalho; escreva
+  `briefs/<tarefa>.followup.md` e rode `launch.sh <tarefa>` de novo para
+  continuar a mesma sessão do opencode.
+- Portão de merge: `tools/regress.sh` verde no worktree, revisão do diff.
+
+## Onda 1 — bugs do upstream (`docs/engine/UPSTREAM-TRIAGEM.md`)
+
+| Issue | Estado | Correção |
+|---|---|---|
+| #242 livro na reza do deserto | ✅ | `Sprite_B3_PedestalPlaque`: `immobilized \|\| busy` como no asm 9ee044; replay `tests/replays/issue242.sav` |
+| #245 morrer/continuar com Zelda | ✅ | `Death_Func15`: desvios do asm 89f50f; replay `issue245.sav` |
+| #328 / PR #329 tabelas de animação | ✅ | tabelas completadas com o byte real da ROM (não o "pular" do PR #329); +kGrabWall; provado com ASan |
+| #243 bombas na ponte | ✅ | `Bomb_Draw`/`AncillaDraw_SomariaBlock`: `beq` após `cmp #$0080` testa flags, não z (asm 889e9e/88e61b); replay `issue243.sav` (ref11) |
+| #255 Select no menu | ✅ | atalho Select→salvar/sair era extensão do zelda3 sempre ligada; agora só com `ItemSwitchLR` (o asm 8ddf15 ignora Select); replay `issue255.sav` |
+| #236 livro/espelho em X/L/R | ✅ | bug da extensão `ItemSwitchLR` (não do port): helper `Hud_IsItemButtonPressed`; testes em `tests/replays-features/` (trace + hash, rodam no regress) |
+| #290 coração do jogo de cavar | ❌ não reproduz | lógica e criação de save batem com o asm; o pedaço só sai a partir da 25ª cova na mesma partida (relato: "20+") — comportamento original |
+| #246 barreira do Agahnim c/ widescreen | ✅ | `Sprite_ActivateAllProxima` subtraía a margem do widescreen duas vezes; feature replay `issue246` (16:9) |
+| #241 som do tremor no Dark Palace | ❌ não reproduz | `sound_effect_ambient=7` (sala 27 do palácio 12) chega ao SPC e toca nos canais 6/7 (ref5, f=62692); ASan limpo no trecho; relato provável volume/MSU do usuário |
+| #297 créditos rápidos | ❌ não reproduz | ref12 cobre o final: módulo 24 em 69529, módulo 25 em 81312, módulo 26 (créditos) em 89365, `HangForever` (sub=38) em 129381; replay termina em 129467 com sub=38. O replay tem `kBugsFixed=0` (modelo poly antigo, créditos em ~40k frames); no caminho live (`kBugsFixed=1`), com e sem `MiscBugFixes`, o módulo 26 dura os mesmos 26.181 frames e chega a sub=38. A música 0x22 dura 232,7 s no SPC player contra ~230,6 s de créditos a 60 fps. Não há leitura de porta APU no asm do final; loop medido a 60,0 fps na config. Não reproduzido no headless; suspeita de performance/áudio em tempo real (renderer "SNES PPU"), não da lógica do final |
+| Varredura ASan (17 replays) | ✅ | 4 tabelas da ROM lidas fora do fim (sprite Tab1, kBugNetTimers, kOverworld_OffsetBaseX/Y), completadas com bytes reais até o índice máximo teórico; 2ª varredura limpa |
+| `kSprite_PrepAndDrawSingleLarge_Tab2` | ✅ | tabela com 256 bytes (251..255 = `Tab1[0..4]` em `$86db04`, o que o asm lê) e índice somado em 8 bits, como o `ADC $86dc35`; nenhum replay exercitava antes |
+
+## Onda 3 — tradução PT-BR completa (#281, #199)
+
+| Parte | Estado | Notas |
+|---|---|---|
+| Diálogo/fonte por mod | ✅ | modkit `--languages pt`, diálogo parcial |
+| Título, seleção de arquivo (gráficos) | ✅ | `modkit.py import-rom portuguese.sfc mods/ptbr-graficos` (lê ponteiros de Decomp_spr/bg da ROM PT; tradução realocou gráficos). Mod gerado só no checkout local |
+| Nomes de itens / menu | ✅ | tabelas substituíveis por mod (`game_tables.def`, `table_overrides`); 9 tabelas importadas da ROM PT; 33/35 painéis certos, arco fiel à ROM PT (que tem o texto deslocado uma linha — defeito da tradução de 2014) |
+| Letreiro "FIM DO JOGO" | ✅ | a tradução reescreveu o letreiro em assembly (8 → 9 letras, tabelas no banco `$A0`); letreiro guiado por tabelas (`kGameOverText*`, `MOD_TABLE_DERIVED`) e `import-rom` decodifica o código PT; replay `gameover` |
+| Créditos PT | ⏳ | formato cru em `$8EB038`; sem prova visual, fora do import padrão |
+
+
+## O que falta (plano consolidado, 09/11/26)
+
+Fonte de cada item: `PLANO.md` (fases), `F4-PLANO.md` (F4d/F4e),
+`UPSTREAM-TRIAGEM.md` (ondas), `REDUX-MAPA.md` e `ALTTI-MAPA.md` (hacks).
+
+### Trilha 1 — engine de mods
+
+| Item | Estado | Notas |
+|---|---|---|
+| F4d buffers nomeados | ✅ | 356 → 57 acessos crus; 71 nomes novos |
+| F4e comportamento novo | ✅ (F4e.4 contínua) | F4e.1/1b ganchos, F4e.2 eventos e `zelda.save`, F4e.3 override de sprite, loja e HUD, F4e.5 itens novos; F4e.4 é o oráculo da seed (R3d), que segue em rodadas |
+| Mod liga opções do `zelda3.ini` | ✅ | campo `"features"` no `mod.json` (M1); opção do mod vale por cima do ini, conflito resolvido pela prioridade e registrado no log; exemplo `mods-examples/opcoes-redux` |
+| Inventário de 24 itens em tempo de execução | ✅ | opções `NewStyleInventory`, `HorizontalMagicBar`, `MenuTimer` e `ReduxHud`, ligáveis por mod; layout largo do menu e HUD de jogo do Redux, save compatível nos dois sentidos; replays `newstyle-menu`, `redux-hud-timer` e `redux-game-hud` |
+| Importar de ROM de hack: gráficos, paletas, mapas (passos 1–2) | ✅ | I1: `import-rom` aceita ROM desconhecida com aviso; tabelas de tilemaps e do mapa de masmorra lidas pelo operando do código; Islands importa 12 assets |
+| Importar salas de masmorra de ROM de hack (passo 3) | ✅ | I2: todas as tabelas de masmorra lidas pelo operando do código; Islands importa 53 assets, Redux 15 + 7 tabelas (19 salas diferentes); sprites do Islands cabem (3.988 bytes; os "83,5 KB" eram leitura errada); `Sprite_6B_CannonTrooper` ainda é `assert(0)` no C e foi pulado |
+| Importar overworld de ROM de hack (passo 4) | ✅ | I3 (ver fila autônoma, item 2) | gargalo comum: Redux (35 salas, 4 áreas), A Link to the Islands e ~20 aventuras completas do romhacking.net |
+
+### Trilha 2 — limpar o upstream (ondas)
+
+| Onda | Estado | O que falta |
+|---|---|---|
+| 1 bugs | ✅ | `Tab2` com 256 bytes e volta de 8 bits do asm; `--load` + `--save-replay` reancora o log no estado carregado, e o replay gravado bate o hash (passo `load-save-replay` no regress) |
+| 2 build | ✅ | fila autônoma, item 4 (#249, #253, PR #256, #226; Makefile com dependências de cabeçalho) |
+| 3 tradução PT | ✅ | créditos e epílogo PT (W3d/W3f), texto do arco corrigido por decisão (W3e), "FIM DO JOGO" (W3c) |
+| 4 pedidos como mods de exemplo | ✅ | fila autônoma, item 5: 8 mods de exemplo |
+| 5 vídeo e forks grandes | precisa de decisão ou teste manual | decidir um por um: co-op (rail5), randomizer (Slashmolder), HD (ghost19880), menu de opções (hyukishi) |
+
+### Trilha 3 — hacks da comunidade como alvo
+
+| Hack | Estado | Notas |
+|---|---|---|
+| A Link to the Past Redux | mod local ✅ (RX, F4e3b) | menu de 24, HUD de jogo e opções conferidos lado a lado com a ROM; falta jogar de ponta a ponta |
+| A Link to the Islands v2.5 | mod local ✅ (AX, IX) | gráficos, salas, overworld, diálogo e Link importados; falta conferir o templo da praia e uma masmorra inteira jogando |
+| Lista do romhacking.net | ✅ | 69 hacks de ALttP em `.agents/rhdn-alttp-hacks.txt` (local); site exige passar o Cloudflare num navegador comum |
+
+### Trilha 4 — metas grandes (decididas em 09/11/26)
+
+| Meta | Direção | Notas |
+|---|---|---|
+| Ponte SNI (R1) | ✅ | servidor EmuNWA opcional (`[Network]`, só localhost, escrita desligada por padrão), `docs/engine/SNI.md`, `tools/nwa_probe.py`; falta testar com o SNI real e no Windows |
+| Randomizer | **compatível com o que a comunidade já usa**: a mesma seed tem de dar a mesma coisa | mudança de rumo em 10/11/26 (`RANDOMIZER-COMPAT.md`): o C lê a seed como dados (importador, R4); o oráculo estrito (11200 frames, até Kakariko) fica como regressão; compatibilidade total de corrida por `--emu-rom` |
+| Co-op | ✅ em código (C0–C3d) | rede compatível com o ALttPO clássico, tela dividida local e mundo compartilhado com HUD do P2; falta o teste real (dois jogadores, ALttPO no bsnes) |
+| Voxel / 3D | ✅ R-1..R-5 (V1–V5) | descrição do frame, plugins nativos, HD tiles, voxel em OpenGL com câmera livre e sombras; falta jogar em janela |
+
+## Fila autônoma (autorizada em 09/11/26)
+
+Ficou autorizado seguir os planos aprovados sem revisão a cada passo. Regras: no máximo
+2 agentes ao mesmo tempo (memória); cada merge com revisão, conferência
+na ROM quando houver afirmação sobre ela, e portão verde (ou, para
+mudança só em Python, base reconstruída numa cópia isolada com o hash
+`188bfc86…`). Atualizar esta seção a cada item.
+
+| # | Item | Estado |
+|---|---|---|
+| 1 | F4e.1 filtros e decisões | ✅ mergeada; 11 ganchos (`MOD_FILTER`/`MOD_DECIDE`), `zelda.filter`/`zelda.decide`, 3 replays de feature com mod; portão 18 + 7 |
+| 2 | I3 overworld | ✅ mergeado: tabelas de overworld pelo operando do código (iguais nas 3 ROMs); Islands importa 103 assets e `kOverworldAreaHeads` e começa na área `0x10` (=16, a "Area 10" do leia-me em hex); Redux 31 assets; o atalho de Kakariko é opcional e não está na ROM principal do Redux; base `188bfc86…` reconstruída após o merge; **não verificado**: mapa-múndi do Islands contra a ROM do hack |
+| 3 | F4e.2 eventos e estado salvo | ✅ mergeada: `FileLoad`, `FileCreate`, `DungeonEnter/Exit`, `Quit`, `OverworldTransition`; `zelda.save` em arquivo ao lado do save; exemplo `contador-mortes`; pendente: copiar/apagar arquivo no file select não acompanha o arquivo do mod |
+| 4 | Onda 2 (build) | ✅ mergeada: #249 (walrus e escape), #253 (argtypes do opus), PR #256 (Python 3.6 no caminho do make), #226 (nproc), Makefile; #309/#283/#313 já resolvidos; #257 não se aplica; PR #270 (GLES) e #301 (DPI) pendentes de decisão de vídeo; base reconstruída com hash `188bfc86…` |
+| 5 | Onda 4: mods de exemplo | ✅ mergeada: 8 mods (`espada-quebra-vaso`, `cheats-ligados`, `vida-cheia-carregar`, `god-mode`, `hero-mode`, `quick-commands`, `no-sword-beam`, `corrige-bugs-126`); ganchos que faltaram viram o item 13 |
+| 6 | F4e.3 (início): soldado do canhão | ✅ mergeado (S6B): `Sprite_6B_CannonTrooper` completo, 9 rotinas com endereço; replay `cannon-trooper` com `compare: on` (spawn forçado por patch no replay); não exercitados: trava de direção horizontal/vertical, pose para a esquerda, falta de slot |
+| 7 | F4d: buffers com nome | ✅ mergeada: acessos crus a `g_ram` fora de `variables.h` caíram de 356 para 57 (os restantes são índices dinâmicos); 71 nomes novos na tabela de estado, nenhum removido |
+| 8 | Créditos PT | ✅ mergeado (W3d): formato real PT = byte alto por entrada + bytes baixos (2028 bytes); import por padrão; renderer detecta o formato, caminho US provado pelo `ref12`; pendente: a frase do epílogo ("AND THE MASTER SWORD SLEEPS AGAIN… FOREVER!") continua em inglês com o mod |
+| 9 | Texto do arco da tradução de 2014 | ✅ mergeado (W3e): `KNOWN_ROM_CORRECTIONS` por SHA-1 no modkit; arco 2/3/4 = "Arco e / Flecha", "Arco", "Arco e / Flecha de Prata"; `mods/ptbr-graficos` local regenerado |
+| 10 | Desenhos do co-op e da API de renderização (voxel), com pesquisa de referências; **autorizado**; só documento para revisão, sem código | ✅ `COOP-DESENHO.md` e `RENDER-DESENHO.md`, ambos revisados e aprovados (render em 10/11/26) |
+| 11 | R2: seed do alttpr.com | ✅ mergeado: `tools/alttpr_seed.py build/info` (hash da seed diária = Lamp, Shield, Cane, Map, Mushroom); **a ROM da seed roda no emulador embutido** (`--emu-rom`, ~350 fps headless: título, seleção com hash, começo do jogo); vídeo/áudio/entrada interativos e SRAM persistente vieram no R3a; ver `RANDOMIZER-R2.md` e `RANDOMIZER.md` |
+| 12 | Import de salas com o soldado do canhão | ✅ mergeado (I2b): Redux sala 176 e Islands 184 (6 soldados) e 216 importam o `0x6B`; 600 frames sem crash nas três; base `188bfc86…` |
+| 13 | F4e.1b: ganchos da onda 4 | ✅ mergeada: `LinkDamage` (filtro, com fonte), `SwordBeamSpawn`, `DropSpawned`, `PotBreakSwordLevel`; **corrigido** o `SwordBeamDamage` da F4e.1 (testava `0x0B`, a vara de gelo; agora `0x0C`); Redux devolve classe 2 (conferido: `$06EC8A` = 01 na US, 02 no Redux); replays `f4e-linkdamage` e `sword-beam-hit` |
+| 14 | R3a: seed jogável no modo emulador | ✅ mergeado: `--emu-rom` abre a janela e roda a ROM da seed (vídeo, áudio do DSP, teclado/gamepad, `seed.srm` ao lado da ROM); SNI expõe o emulador; asserts do PPU estritos no caminho normal; janela testada em Xvfb pelo agente e o jogo normal com janela conferido por mim; ver `RANDOMIZER.md` |
+| 15 | F4e.3a: substituir a rotina de um tipo de sprite | ✅ mergeada: `zelda.override("Sprite:<tipo>", {tick=fn})`, `zelda.sprite.get/set`, `original(slot)`, despacho só com máscara ligada, fallback no erro; exemplo `inimigo-novo` (cavaleiro que foge); replay `f4e-sprite-override` |
+| 16 | Epílogo em PT | ✅ mergeado (W3f): formato PT = cabeçalho + byte alto + byte baixo por palavra, dados em `$A0:80C8` (seguindo o `JML` da PT); "O RETORNO DO REI", "E A ESPADA MESTRA DESCANSA NOVAMENTE… PARA SEMPRE!"; não verificado: algumas linhas da PT perdem o artigo inicial ("VOLTA…"), atribuído aos cabeçalhos da própria tradução |
+| 17 | RX: mod "redux" local | ✅ mergeado: `import-rom --features-from/--scripts-from`; menu de 24 no layout do Redux (conferido lado a lado com a ROM do Redux no emulador); opções `HorizontalMagicBar` e `MenuTimer`; goldens `newstyle-menu` e `f4e-max-items` atualizados (ambos com `NewStyleInventory = 1`, layout mudou de propósito); falta o resto do HUD de jogo do Redux |
+| 18 | Makefile com dependências de cabeçalho (`-MMD -MP`) | ✅ um campo novo em `snes/ppu.h` (R3a) deixou objetos velhos no build incremental e quebrou 2 replays de feature até recompilar do zero; corrigido |
+| 19 | R3b (início da F4e.4): oráculo contra a ROM da seed | ✅ mergeado: `--oracle-rom`; `PatchRomSeed` aplica 29 de 93 operações (58 puladas por JP 1.0, 6 por sobreposição; confirmada a de `0x443FE`); init e contador de frames do z3randomizer em C; oráculo da seed passa 8 frames e para no 9 (paleta da seleção, `SetFileSelectPalette`); falta um "modo JP" no C; ver `RANDOMIZER-ORACULO.md` |
+| 20 | C0: estudo do protocolo do ALttPO | ✅ mergeado: `COOP-ALTTPO.md` (UDP 4590, servidor relay, lista de SRAM com mescla, fantasmas por OAM/CHR/CGRAM; o2 sem fantasmas e incompatível com o clássico); **decisão: compatível com o ALttPO clássico já** |
+| 21 | R3c: oráculo da seed, 2ª etapa | ✅ mergeado: paleta da seleção (`SetFileSelectPalette`) e init JP de larguras/paletas/texto (origem do `$7F5B02`); oráculo passa 9 frames, para no 10 (tilemap JP da seleção, `$8E:F6A8`); replay da seed no portão (pula sem as ROMs); **ressalva**: as tabelas JP usam a rotina asm da própria seed via `EmuRunSeedRoutine` (andaime, não prova); estimativa do agente: chegar a criar arquivo e andar é "trabalho de várias sessões" |
+| 22 | C1: co-op pela rede (ALttPO clássico) | ✅ mergeado: cliente UDP `0x02`/`0x13`, progresso compartilhado com as regras de mescla do estudo, fantasmas (OAM/CHR/paleta por cima do PPU), modo corrida, `[Coop]` desligado por padrão, `tools/coop_relay.py`; testado entre dois zelda3 no localhost (item passa, fantasma aparece, corrida); parsing revisado (limites conferidos, SRAM remota em cópia separada); **não testado contra o bsnes + ALttPO real** |
+| 23 | R3d: oráculo da seed, rodadas | **ciclo encerrado em 10/11/26** (mudança de rumo para o importador de seed, item 39); o oráculo estrito fica como regressão (rota de Kakariko, 11200 frames). Rodada 47 ✅ (tradução US→JP central em `SeedOracle_JpMessageId`: US 397 × JP 409, +1 antes de `$16`, bloco `$2F–$183` em -2, `$184/$185`→`$182`; os quatro ajustes locais de Priest, game over, bottle vendor e snitch lady foram removidos; o estrito **1–11200** continua passando. O A no 10000 fecha a mensagem da snitch lady e diverge no **10023** no buffer `uvram`; não há write nativo do SNES nessa faixa, os valores vêm do hook z3r/C, e o `RenderText_Draw_Finish` do C não é chamado — pendente); rodada 46 ✅ (9479/9591 eram `dialogue_message_index`, não HDMA; IDs JP -2; rota 11200); rodada 45 ✅ (patch OAM US por assinatura em `0x3643A`; modelo `$03–$05` removido; **76 de 93 sites US**; Kakariko 0x18 e música 7); rodada 44 ✅ (entradas do prep OAM e rascunhos da paleta/sprite load; 9076 fechou); rodada 43 ✅ (write `$86:E46B/$E46D` incondicional; gate removido); rodada 42 ✅ (scroll horizontal `$82:BBAF`/`$82:BCBC`; **11200 frames**); rodada 41 ✅ (`--seed-rom` e `tools/seed_route.py`; **11200 frames**); rodada 40 ✅ (recuperação de afogamento JP, **11200 frames**); rodada 39 ✅ (checksum z3r com cadeia ADC; **11022 frames**); rodada 38 ✅ (natação JP inteira, game-over/save z3r; **6000 frames no modo estrito**); rodada 37 ✅ (caminho fake-flipper do `PlayerHandler_04_Swimming` em modo seed: contadores de animação e zera `$27/$28/$30/$31`); **3400 frames no modo estrito**; rodada 36 ✅ (tabela JP map8→atributo `$8F:FD94` lida da ROM da seed em `SeedOracle_JpMap8TileAttrTable`); **3400 frames no modo estrito**; rodada 35 ✅ (hooks z3r `BonkRecoil` `$A4:8785` e `JumpDownLedge` `$A4:8766`); **3400 frames no modo estrito**; rodada 34 ✅ (hook z3r `BonkRecoil` `$A4:8785`; replay contorna os guardas e chega à tela 0x15); **3400 frames no modo estrito**; rodada 33 ✅ (música por tela do JP `$A0:CC96` em `SeedOracle_JpOverworldMusic`; transição 0x13→0x14 usa a seleção; casos `$82:A968`/`$82:A999` mantidos); **2700 frames no modo estrito**; rodada 32 ✅ (transição JP: aux GFX `$80:D6AE` com tabelas `$80:DDD7`/`$80:DB97`, hook z3r `$A4:89EF`/`$A0:81FF`, `$021B` e rascunho `$82:F165`; música de transição `$82:A968`/`$82:A999`); **2700 frames no modo estrito**; rodada 31 ✅ (rascunho `$04` do tile detect `$87:CF1A`; tabela JP de atributo de tile `$9B:F110` acima de `0xFF`; contador de dano z3r `$A0:B2DA`/`$A0:B2B9`; guard de música JP); **2100 frames no modo estrito**; rodada 30 ✅ (revert da aproximação de scroll; escritor `$04` do scroll JP `$82:BCBC` no modelo de `$03–$05` via `SeedOracle_JpSetNmiScratchDelta(r4)`); **1700 frames no modo estrito**; rodada 28 ✅ (blank do HUD: `$8A:FDB0` grava `0x7F` no refresh e o load do overworld lê `$A1:86B0`/`$8D:FA9F`, 0x207F); rodada 27 ✅ (tempo de vida de `$03–$05`: dispatch da NMI `$80:8061/$807D/$8099` e `stz $04` do scroll `$82:BAFA`; sem regra por tipo); rodada 26 ✅ (tabela JP da porta grande `$82:ABD9`; `SeedOracle_JpDoorAnimTile`); rodada 25 ✅ (portal de espelho e o rascunho `$04` da NMI; `SeedOracle_JpNmiDispatchScratch`); rodada 24 ✅ (tilemap do overworld JP: map32 `$82:F6B1`/`$82:F891`, map32->map16 `$83:8000`/`$83:B3C0`/`$84:8000`/`$84:B3C0`, map16->map8 `$8F:8000`, ambiente `$012D` e tile de transição `$0DBE`; listagem em `.agents/refs/jp-owtilemap.md`); rodada 23 ✅ (load do overworld JP: `$7F:5B00` preservado, `SeedOracle_JpInitializeTilesets` no load, blanks do HUD `$207F`); rodada 22 ✅ (ambiente z3r `$A4:C1B2`, contador `ScreenTransitions` `$A0:B0FC`/`$7EF43C`, saída da Sanctuary e primeiros passos; listagem em `.agents/refs/jp-transition.md`); rodada 21 ✅ (HUD JP/z3r `$A1:86B0`/`$8D:FAA5`, quatro dígitos de rupees, guard do ambiente `$012D`, mensagem do Priest `$17`; listagem em `.agents/refs/jp-hud.md`); rodada 20 ✅ (VWF JP `$8E:F1A3`: comandos, larguras `$8E:FD7C`, glifos custom e blend/expand; listagem em `.agents/refs/jp-vwf.md`); rodada 19 ✅ (motor de texto JP: `$8E:EE86`, hook `$A4:D0ED`, borda `$F109`/`$F138` e tilemap `$FC38`/`$FC5F`); rodada 18 ✅ (listagem do load/texto JP em `.agents/refs/jp-loadfile.md`); rodada 17 ✅ (merge `ae193d8`): card z3r `DrawPlayerFile` (`$A4:8B8D`) com `$D518`/`$D594`/`$D6C0`, seleção do arquivo e entrada no jogo (load JP com `$7F:6000`/`$1FFE`/`$F4F0`/`$5090`/mensagem `$182`); 0 chamadas de `EmuRunSeedRoutine`; `$A2:CACA` não entra neste caminho |
+| 24 | C2: co-op local em tela dividida | ✅ mergeado: duas instâncias completas no mesmo processo (troca ~13,5 µs/frame), mesmo código de progresso e fantasmas da C1 por transporte em memória, `[Coop] Local`, `[KeyMap2]`/`[GamepadMap2]`; instância 2 sozinha passa o `ref0` com oráculo; jogo normal com janela conferido por mim (Xvfb); não testado: segundo gamepad físico; mods/Lua ainda globais |
+| 25 | AX: mod "A Link to the Islands" | ✅ mergeado: `opcoes-islands` (5 opções), `islands-ganchos` (espelho proibido no DW, quebra-cabeça da praia com a combinação do binário v2.5 = cima/baixo/direita/cima, recarga de magia); veto de transição no `OverworldTransitionTarget`; replay `ax-beach-veto`; jogo novo roda 43 mil frames sem travar; **faltam**: diálogo e sprite do Link do hack (item 26), chegada visual ao templo da praia, masmorra inteira jogada |
+| 26 | IX: diálogo e sprite do Link de hacks | ✅ mergeado (2 rodadas): Islands mostra o texto e o Link Minish Cap do hack, Redux e Retranslation importam diálogo e fonte; o import mantém os slots de idioma do `.dat` em uso (hack no `us`, demais da base; `--base-dat`); mods do Islands e do Redux carregam com `.dat` US+PT e só US |
+| 27 | C3a: co-op modelo B, 1ª fatia | ✅ mergeado: `[Coop] SharedWorld`, regiões do Link trocadas por jogador (`COOP-MODELO-B.md`), dois Links andando, inimigos acertam o P2, alvo mais próximo nas funções centrais, P2 acompanha nas transições; replay `shared-world-two-links`; faltam câmera que se divide, pose própria do P2, vida/respawn independentes, mais IAs mirando o mais próximo |
+| 28 | C3b: câmera que se divide e pose do P2 | ✅ mergeado: câmera no ponto médio, divide em duas metades quando se afastam e junta quando se aproximam (com histerese; salas de uma tela nunca dividem); P2 com animação e CHR próprios (espelho de CHR no PPU, sem tocar a VRAM do jogo); evento `CameraSplit`; replay `camera-split`; tabelas de DMA do Link conferidas iguais após a refatoração; pendentes: buffer de itens compartilhado, mods desenham só na metade esquerda, P2 não dispara transições |
+| 29 | F4e.5: itens novos | ✅ mergeada: `zelda.item.register` (ids `0x80..0x9f`, ícone e gráfico de recebimento por PNG, uso e recebimento por callback, estado no `zelda.save` do mod), espaços no menu de 24, recebimento pelo filtro `ItemReceive`; exemplo `item-novo` (pena no baú da casa); replay `f4e-item-novo`; limitações: texto de recebimento novo exige modkit, até 24 itens novos visíveis no menu |
+| 30 | C3c: pendências do co-op no mesmo mundo | ✅ mergeado: vida e magia por jogador, reaparecimento em 120 frames (game over só com os dois caídos), "quem passa leva o outro", 13 IAs mirando o mais próximo, buffer 4bpp por jogador, `FrameDraw` por metade; replay `respawn-p2`; pendentes: HUD só mostra a vida do P1, prova visual de dois itens diferentes no mesmo frame |
+| 31 | F4e.3b: loja substituível por mod (com itens novos) e HUD de jogo do Redux como opção | ✅ mergeada: `zelda.shop.set(sala, itens)` define até três itens, preço e quantidade, inclusive itens novos da F4e.5; `ReduxHud` move corações, barra horizontal, contadores e caixa de item para o layout do Redux, independente do menu de 24; exemplo `loja-nova`, replays `f4e3-shop` e `redux-game-hud` |
+| 32 | V1 (R-1 do render): descrição do frame (estado do PPU + mudanças por linha + sprites com dono + camada semântica), renderizador a partir dela com 0 pixels de diferença, dump de depuração | ✅ mergeado: `FrameDesc` v1 (estado do PPU, mudanças por linha de HDMA e da linha 128, sprites com dono e `z`, camada semântica BG1/BG2), `--frame-check` com **0 pixels de diferença** em 1,24 milhão de frames por configuração (224, 240, widescreen; modo 7 4×4 incluso), captura < 0,1 ms/frame; tela dividida ainda fora da checagem |
+| 33 | C3d: acabamento do co-op no mesmo mundo (HUD do P2, prova determinística da espada do P2 acertando um inimigo, dois itens diferentes no mesmo frame) | ✅ mergeado: corações (laranja) e magia do P2 no HUD, junto e nas duas metades, compatível com `ReduxHud`; evento `Player2SpriteDamage`; replays `p2-sword-hit` (espada do P2 tira 4 de vida de um inimigo) e `p2-two-items` (arco e bumerangue no mesmo frame) |
+| 34 | V2 (R-2 do render): interface de plugin nativo versionada, renderizador atual como plugin de referência (embutido e em arquivo), mesmos pixels pelo plugin | ✅ mergeado: `src/mod/render_plugin.h` (API 1, `FrameDesc` v2), carga por `dlopen`/`LoadLibrary` com checagem de versão e volta ao embutido, `builtin:ppu` e `plugins/ppu-ref/`; pelo plugin, 0 pixels de diferença em 1,24 milhão de frames, tela dividida inclusa (uma descrição por painel); overlays `zelda.draw` ficam no host |
+| 35 | V3 (R-3 do render): plugin `hd-tiles` (troca de tile por conteúdo + paleta, condições simples), formato de pack, extração de tiles (fora do git), pack de exemplo original | ✅ mergeado: `plugins/hd-tiles/` desenha modo 1 a partir da `FrameDesc` (janelas, prioridade, mosaico, cor/brilho), pack JSON com `hash`+paleta+`bpp`+condições (`indoors`/`room`/`area`/`floor`/`attr`/`layer`), `--frame-desc-dump` exporta `-tiles.json`/PNG em `.agents/shots`, pack de exemplo 2× original; API de plugin v2 com `preferred_scale`; pack vazio 1× com **0 pixels** em 35.902 frames (19 replays) + 550/450 frames de tela dividida + spots widescreen/240; custo ~2,49 ms/frame (1×) e ~3,27 ms/frame (2×) |
+| 36 | V4 (R-4 do render): plugin voxel em OpenGL, altura pela colisão, sprites como cartões com `z`, câmera inclinada, perfil opcional | ✅ mergeado: `plugins/voxel/` (EGL/OpenGL fora da tela, também em `--headless`), colunas 8×8 com altura pelo atributo de colisão e cor do tile, sprites como cartões com `z`, HUD em 2D por cima, perfil JSON (`default-profile.json`), queda para o renderizador de referência sem GL; ~2 ms/frame; screenshots de overworld, masmorra e pulo |
+| 37 | V5 (R-5 do render): acabamento do voxel (BG1 do overworld, HDMA de rolagem, tela dividida, câmera livre e tecla liga/desliga, sombras e luz, perfis por hack) | ✅ mergeado (2 rodadas): `FrameDesc` v3 com semântica própria do BG1 do overworld e atributos pela rolagem de cada faixa de 8 linhas; API de plugin v3 com comandos; câmera livre (Alt+setas, Alt+=/-/0), F11 liga/desliga, sombras (F12) e luz (Shift+F11); perfis com `extends` (`flat`, `exaggerated`); tela dividida provada; voxel com sombras ~3,5 ms/frame |
+| 38 | U1: sobras da onda 1 (`Tab2` com a volta de 8 bits do asm; `--load` + `--save-replay` com hash alinhado e teste) | ✅ | `Tab2` completa até 255; `StateRecorder_Load` reancora o log no estado carregado; passo `load-save-replay` no `tools/regress.sh` compara o hash do replay gravado |
+| 39 | R4: importador de seed (o motor US em C joga uma seed do alttpr.com lendo os locais como dados; mudança de rumo aprovada em 10/11/26, o oráculo estrito vira regressão) | rodadas 1–2 ✅: **248 de 248 locais** (baús, tio, fixos, prêmios, lojas), chaves/mapa/bússola pela masmorra de destino, inventário inicial pelo template de SRAM, opção `Z3rRules` (água sem nadadeiras, recuo, pulo de borda, contadores); rodada 3 ⏳: textos e dicas, lojas que dividem sala, flags de `$B0:8000`, passo a passo para jogar |
+| 40 | O1: menu de opções dentro do jogo (vídeo, som, gameplay, mods, teclas; grava em `zelda3.user.ini`), referência hyukishi (onda 5, decidido em 10/11/26) | ⏳ |
+| 41 | W5: PRs #270 (GLES) e #301 (DPI) do upstream trazidos para a branch (decidido em 10/11/26) | ⏳ |
+
+Publicação: fork público `github.com/carmin777/zelda3`, branch `engine/modloader`, sempre pela cópia limpa de `.agents/publish/clean.sh` (sem caminhos locais, nome ou fuso). Fora da fila (precisam de decisão ou teste manual): SNI real, PR para o upstream,
+o voxel (R-4) antes de a R-1/R-2 estarem prontas; desenhos do co-op (09/11/26) e do render (10/11/26) aprovados.

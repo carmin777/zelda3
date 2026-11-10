@@ -1,0 +1,8 @@
+compare: off
+ev 42 ModuleChange 14 9 0
+ev 216 ModuleChange 9 14 0
+ev 237 WorldChange 0 1 0
+ev 310 SpriteSpawn 13 235 0
+ev 310 SpriteSpawn 15 108 0
+hook 412 Filter OverworldTransitionTarget 48 -> 63 arg 1
+final 500 676842eb

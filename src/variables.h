@@ -1481,8 +1481,8 @@ extern const uint8 kMaxArrowsForLevel[];
 extern const uint8 kReceiveItem_Tab1[76];
 extern const uint8 kHealthAfterDeath[21];
 extern const uint8 kReceiveItemGfx[76];
-extern const uint16 kOverworld_OffsetBaseY[64];
-extern const uint16 kOverworld_OffsetBaseX[64];
+extern const uint16 kOverworld_OffsetBaseY[192];
+extern const uint16 kOverworld_OffsetBaseX[192];
 
 // forwards
 
@@ -1518,6 +1518,132 @@ typedef struct UploadVram_3 {
 } UploadVram_3;
 
 #define uvram (*(UploadVram_3*)(&g_ram[0x1000]))
+
+
+// ---------------------------------------------------------------------------
+// Names for raw WRAM ranges used by the engine (F4d).
+// ---------------------------------------------------------------------------
+
+// 65816 scratch registers A0-A15 at $7E0000-$7E000F. The community RAM map
+// names these bytes A0..A15; R0/R2 are the 16-bit views used by sprite code.
+#define A0 (*(uint8*)(g_ram+0x00))
+#define A1 (*(uint8*)(g_ram+0x01))
+#define A2 (*(uint8*)(g_ram+0x02))
+#define A3 (*(uint8*)(g_ram+0x03))
+#define A4 (*(uint8*)(g_ram+0x04))
+#define A5 (*(uint8*)(g_ram+0x05))
+#define A6 (*(uint8*)(g_ram+0x06))
+#define A7 (*(uint8*)(g_ram+0x07))
+#define A8 (*(uint8*)(g_ram+0x08))
+#define A9 (*(uint8*)(g_ram+0x09))
+#define A10 (*(uint8*)(g_ram+0x0A))
+#define A11 (*(uint8*)(g_ram+0x0B))
+#define A12 (*(uint8*)(g_ram+0x0C))
+#define A13 (*(uint8*)(g_ram+0x0D))
+#define A14 (*(uint8*)(g_ram+0x0E))
+#define A15 (*(uint8*)(g_ram+0x0F))
+#define R0 (*(uint16*)(g_ram+0x00))
+#define R2 (*(uint16*)(g_ram+0x02))
+
+// Scratch byte used when Link is knocked back / dungeon state is reset.
+#define scratch_c7 (*(uint8*)(g_ram+0xC7))
+
+// Stripe-packet source used when nmi_load_bg_from_vram == 4.
+#define nmi_stripe_buffer ((uint8*)(g_ram+0x21B))
+
+// Vertical writing / VWF scratch buffer at $7E1300.
+#define vwf_render_buffer ((uint8*)(g_ram+0x1300))
+
+// Temporary row used by Do3To4High/LoadDefaultGraphics at $7E00BF. It
+// overlaps the dungeon line-pointer table but is used as an 8-word scratch.
+#define gfx_expand_temp_row ((uint16*)(g_ram+0xBF))
+
+// Background and sprite 3bpp decompression buffers. Each slot is $600 bytes.
+#define aux_bg_gfx_buffer_0 ((uint8*)(g_ram+0x6000))
+#define aux_bg_gfx_buffer_1 ((uint8*)(g_ram+0x6600))
+#define aux_bg_gfx_buffer_2 ((uint8*)(g_ram+0x6C00))
+#define aux_bg_gfx_buffer_3 ((uint8*)(g_ram+0x7200))
+#define sprite_gfx_buffer_0 ((uint8*)(g_ram+0x7800))
+#define sprite_gfx_buffer_1 ((uint8*)(g_ram+0x7E00))
+#define sprite_gfx_buffer_2 ((uint8*)(g_ram+0x8400))
+#define sprite_gfx_buffer_3 ((uint8*)(g_ram+0x8A00))
+
+// 3bpp-to-4bpp expansion staging area ($7E9000-$7EBFFF). Item, sword, shield,
+// rupee, peg and star-tile graphics all use offsets inside this buffer.
+#define gfx_4bpp_buffer ((uint8*)(g_ram+0x9000))
+
+// General decompression scratch buffers at $7F4000. Decomp_spr/Decomp_bg
+// write 3bpp data here before it is expanded into gfx_4bpp_buffer.
+#define decomp_buffer ((uint8*)(g_ram+0x14000))
+#define decomp_buffer_2 ((uint8*)(g_ram+0x14600))
+#define decomp_buffer_3 ((uint8*)(g_ram+0x14800))
+
+// Second moving-wall tilemap buffer (moving_wall_arr1 is $7EC880).
+#define moving_wall_arr2 ((uint16*)(g_ram+0xC8C0))
+
+// Dungeon door flag / door list scratch that overlaps the NMI tile buffer.
+// These overlap vram_upload_tile_buf, so keep the aliases inside that
+// named buffer to preserve the whole-buffer state-table estimate.
+#define adjacent_doors_flags (vram_upload_tile_buf[0])
+#define adjacent_doors (vram_upload_tile_buf + 8)
+
+// Optional engine features keep their state in unused base-game RAM. These
+// offsets must match the kRam_* enum in features.h.
+#define apui00 (*(uint8*)(g_ram+0x648))
+#define crystal_rotate_counter (*(uint8*)(g_ram+0x649))
+#define bugs_fixed (*(uint8*)(g_ram+0x64A))
+#define enhanced_features0 (*(uint32*)(g_ram+0x64C))
+#define msu_curr_sample (*(uint32*)(g_ram+0x650))
+#define msu_volume (*(uint8*)(g_ram+0x654))
+#define msu_track (*(uint8*)(g_ram+0x655))
+#define hud_inventory_order ((uint8*)(g_ram+0x225))
+#define hud_cur_item_x (*(uint8*)(g_ram+0x656))
+#define hud_cur_item_l (*(uint8*)(g_ram+0x657))
+#define hud_cur_item_r (*(uint8*)(g_ram+0x658))
+
+// Scratch aliases used by the spell ancillas. They overlap because only one
+// medallion effect is active at a time.
+#define swordbeam_arr ((uint8*)(g_ram+0x15800))
+#define swordbeam_var1 (swordbeam_arr[4])
+#define swordbeam_var2 (*(uint8*)(g_ram+0x15808))
+#define swordbeam_temp_x (*(uint16*)(g_ram+0x1580E))
+#define swordbeam_temp_y (*(uint16*)(g_ram+0x15810))
+#define ether_arr1 ((uint8*)(g_ram+0x15800))
+#define ether_var2 (*(uint8*)(g_ram+0x15808))
+#define ether_y2 (*(uint16*)(g_ram+0x1580A))
+#define ether_y_adjusted (*(uint16*)(g_ram+0x1580C))
+#define ether_x2 (*(uint16*)(g_ram+0x1580E))
+#define bombos_arr1 ((uint8*)(g_ram+0x15800))
+#define bombos_arr2 ((uint8*)(g_ram+0x15810))
+
+// Select-file / intro / ending scratch aliases for the R16/R18/R20 window.
+#define selectfile_R16 (*(uint8*)(g_ram+0xC8))
+#define selectfile_R17 (*(uint8*)(g_ram+0xC9))
+#define selectfile_R18 (*(uint16*)(g_ram+0xCA))
+#define selectfile_R20 (*(uint16*)(g_ram+0xCC))
+#define intro_sword_ypos (*(uint16*)(g_ram+0xC8))
+#define intro_sword_18 (*(uint8*)(g_ram+0xCA))
+#define intro_sword_19 (((uint8*)&selectfile_R18)[1])
+#define intro_sword_20 (*(uint8*)(g_ram+0xCC))
+#define intro_sword_21 (*(uint8*)(g_ram+0xCD))
+#define intro_sword_24 (*(uint8*)(g_ram+0xD0))
+#define ending_which_dung (*(uint16*)(g_ram+0xCC))
+#define ending_credits_digit (*(uint16*)(g_ram+0xCE))
+
+// 256-byte poly/thread scratch area at $7E1F00.
+#define poly_thread_ram ((uint8*)(g_ram+0x1F00))
+
+// Overlapping sprite scratch arrays (giant moldorm, chain chomp, beamos).
+#define moldorm_x_hi ((uint8*)(g_ram+0x1FC80))
+#define moldorm_y_hi ((uint8*)(g_ram+0x1FD80))
+#define chainchomp_x_hist ((uint16*)(g_ram+0x1FC00))
+#define chainchomp_y_hist ((uint16*)(g_ram+0x1FD00))
+// These scratch words overlap the beamos_x_hi byte array.
+#define byte_7FFE01 (beamos_x_hi[1])
+#define word_7FFE00 WORD(beamos_x_hi[0])
+#define word_7FFE02 WORD(beamos_x_hi[2])
+#define word_7FFE04 WORD(beamos_x_hi[4])
+#define word_7FFE06 WORD(beamos_x_hi[6])
 
 extern uint8 g_ram[131072];
 extern const uint16 kUpperBitmasks[];

@@ -1,0 +1,11 @@
+{
+  "id": "corrige-bugs-126",
+  "name": "Corrige todos os bugs (#126)",
+  "version": "1.0.0",
+  "api": 1,
+  "features": {
+    "MiscBugFixes": true,
+    "GameChangingBugFixes": true
+  },
+  "script": "main.lua"
+}

@@ -1,0 +1,8 @@
+# Inputs for the --load + --save-replay regression check in tools/regress.sh:
+# walk right, stop, press B, then walk down and stop.
+1 Right
+21 -
+31 B
+41 -
+51 Down
+61 -

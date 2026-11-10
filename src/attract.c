@@ -961,7 +961,7 @@ void Attract_BuildNextImageTileMap() {  // 8cf73e
   };
   static const uint16 kAttract_LegendGraphics_sizes[4] = { 157+1, 237+1, 199+1, 265+1 };
   int i = attract_next_legend_gfx >> 1;
-  memcpy(&g_ram[0x1002], kAttract_LegendGraphics_pointers[i], kAttract_LegendGraphics_sizes[i]);
+  memcpy(vram_upload_data, kAttract_LegendGraphics_pointers[i], kAttract_LegendGraphics_sizes[i]);
   nmi_load_bg_from_vram = 1;
 }
 
@@ -994,7 +994,7 @@ void Attract_BuildBackgrounds() {  // 8cf7e6
   {
     int k = 0;
     const uint16 *p = kAttract_CopyToVram_Tab0;
-    uint16 *dst = (uint16 *)&g_ram[0x1006];
+    uint16 *dst = vram_upload_data + 2;
     do {
       int j = k & 3;
       do {
@@ -1006,7 +1006,7 @@ void Attract_BuildBackgrounds() {  // 8cf7e6
 
   {
     int k = 0;
-    uint16 *dst = (uint16 *)&g_ram[0x1006];
+    uint16 *dst = vram_upload_data + 2;
     do {
       int j = k & 1;
       const uint16 *p = kAttract_CopyToVram_Tab1 + ((k & 0x20) >> 4);
@@ -1022,7 +1022,7 @@ void Attract_BuildBackgrounds() {  // 8cf7e6
 void Attract_TriggerBGDMA(uint16 dstv) {  // 8cf879
   uint16 *dst = &g_zenv.vram[dstv];
   for (int i = 0; i < 8; i++) {
-    memcpy(dst, &g_ram[0x1006], 0x100);
+    memcpy(dst, vram_upload_data + 2, 0x100);
     dst += 0x80;
   }
 }

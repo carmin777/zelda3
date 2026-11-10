@@ -1,0 +1,13 @@
+{
+  "id": "opcoes-islands",
+  "name": "Opções do A Link to the Islands",
+  "version": "1.0.0",
+  "api": 1,
+  "features": {
+    "ItemSwitchLR": true,
+    "BreakPotsWithSword": true,
+    "CollectItemsWithSword": true,
+    "TurnWhileDashing": true,
+    "CancelBirdTravel": true
+  }
+}

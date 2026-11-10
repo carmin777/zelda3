@@ -10,7 +10,7 @@ def cache(user_function):
 
 # Both are common SNES rom extensions. For Zelda3 (NA), they are equivalent files.
 COMMON_ROM_NAMES = ['zelda3.sfc', 'zelda3.smc']
-DEFAULT_ROM_DIRECTORY = os.path.join(os.path.dirname(__file__), '..')
+DEFAULT_ROM_DIRECTORY = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
 ZELDA3_SHA1_US = '6D4F10A8B10E10DBE624CB23CF03B88BB8252973'
 ZELDA3_SHA1 = {
@@ -28,9 +28,9 @@ ZELDA3_SHA1 = {
   '43CD3438469B2C3FE879EA2F410B3EF3CB3F1CA4' : ('sv', 'Swedish - https://www.romhacking.net/translations/982/'),
 }
 
-def load_rom(filename, support_multilanguage = False):
+def load_rom(filename, support_multilanguage = False, allow_unknown = False):
   global ROM
-  ROM = LoadedRom(filename, support_multilanguage)
+  ROM = LoadedRom(filename, support_multilanguage, allow_unknown)
   return ROM
 
 def get_byte(addr):
@@ -59,7 +59,7 @@ def get_word(addr):
 
 
 class LoadedRom:
-  def __init__(self, path = None, support_multilanguage = False):
+  def __init__(self, path = None, support_multilanguage = False, allow_unknown = False):
     rom_path = self.__get_rom_path(path)
     self.ROM = open(rom_path, 'rb').read()
 
@@ -77,17 +77,27 @@ class LoadedRom:
 
     if support_multilanguage:
       if self.language == None:
-        msg = f"\n\nROM with hash {hash} not supported.\n\nYou need one of the following ROMs to extract the resources:\n"
-        for k, v in ZELDA3_SHA1.items():
-          msg += '%5s: %s: %s\n' % (v[0], k, v[1])
-        raise Exception(msg)
-      print('Identified ROM as: %s - "%s"' % entry)
+        if allow_unknown:
+          print('Warning: ROM with hash %s is not a known translation; reading it anyway.' % hash)
+        else:
+          msg = f"\n\nROM with hash {hash} not supported.\n\nYou need one of the following ROMs to extract the resources:\n"
+          for k, v in ZELDA3_SHA1.items():
+            msg += '%5s: %s: %s\n' % (v[0], k, v[1])
+          raise Exception(msg)
+      else:
+        print('Identified ROM as: %s - "%s"' % entry)
     else:
       if self.language != 'us':
         raise Exception(f"\n\nROM with hash {hash} not supported.\n\nExpected {ZELDA3_SHA1_US}.\nPlease verify your ROM is \"Legend of Zelda, The - A Link to the Past (USA)\"");
 
   def get_byte(self, ea):
-    assert (ea & 0x8000)
+    bank = (ea >> 16) & 0xff
+    if not (ea & 0x8000):
+      if 0x40 <= bank <= 0x6f or 0xc0 <= bank <= 0xef:
+        raise Exception(
+          "address $%06x is in the lower half of LoROM bank $%02x; "
+          "that is not a ROM window" % (ea, bank))
+      assert (ea & 0x8000), "address $%06x is not in a LoROM ROM window" % ea
     ea = ((ea >> 16) & 0x7f) * 0x8000 + (ea & 0x7fff)
     return self.ROM[ea]
 

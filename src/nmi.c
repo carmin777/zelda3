@@ -1,7 +1,9 @@
 #include "nmi.h"
 #include "zelda_rtl.h"
+#include "zelda_cpu_infra.h"
 #include "variables.h"
 #include "messaging.h"
+#include "mod/seed_oracle.h"
 #include "snes/snes_regs.h"
 #include "snes/ppu.h"
 #include "assets.h"
@@ -40,11 +42,11 @@ static PlayerHandlerFunc *const kNmiSubroutines[25] = {
   &NMI_UpdateStarTiles,
 };
 void NMI_UploadSubscreenOverlayFormer() {
-  NMI_HandleArbitraryTileMap(&g_ram[0x12000], 0, 0x40);
+  NMI_HandleArbitraryTileMap(dung_bg2_attr_table, 0, 0x40);
 }
 
 void NMI_UploadSubscreenOverlayLatter() {
-  NMI_HandleArbitraryTileMap(&g_ram[0x13000], 0x40, 0x80);
+  NMI_HandleArbitraryTileMap(dung_bg1_attr_table, 0x40, 0x80);
 }
 
 static void CopyToVram(uint32 dstv, const uint8 *src, int len) {
@@ -132,11 +134,12 @@ static void Interrupt_NMI_AudioParts_Locked() {
   zelda_apu_write(APUI03, sound_effect_2);
   sound_effect_1 = 0;
   sound_effect_2 = 0;
+  if (EmuSeedRomActive())
+    g_ram[0x12B] = 0;  // z3r $A4:C46A: the MSU handler consumes the override
 
 }
 
 void Interrupt_NMI(uint16 joypad_input) {  // 8080c9
-
   Interrupt_NMI_AudioParts_Locked();
 
   if (!nmi_boolean) {
@@ -191,10 +194,10 @@ void NMI_DoUpdates() {  // 8089e0
     memcpy(&g_zenv.vram[0x41c0], &g_ram[dma_source_addr_15], 0x40);
     memcpy(&g_zenv.vram[0x4200], &g_ram[dma_source_addr_16], 0x40);
     memcpy(&g_zenv.vram[0x4220], &g_ram[dma_source_addr_17], 0x40);
-    memcpy(&g_zenv.vram[0x4240], &g_ram[0xbd40], 0x40);
+    memcpy(&g_zenv.vram[0x4240], (gfx_4bpp_buffer + 0x2d40), 0x40);
     memcpy(&g_zenv.vram[0x4300], &g_ram[dma_source_addr_18], 0x40);
     memcpy(&g_zenv.vram[0x4320], &g_ram[dma_source_addr_19], 0x40);
-    memcpy(&g_zenv.vram[0x4340], &g_ram[0xbd80], 0x40);
+    memcpy(&g_zenv.vram[0x4340], (gfx_4bpp_buffer + 0x2d80), 0x40);
 
     if (BYTE(flag_travel_bird)) {
       memcpy(&g_zenv.vram[0x40e0], &g_ram[dma_source_addr_20], 0x40);
@@ -215,21 +218,25 @@ void NMI_DoUpdates() {  // 8089e0
   flag_update_hud_in_nmi = 0;
   flag_update_cgram_in_nmi = 0;
 
-  memcpy(g_zenv.ppu->oam, &g_ram[0x800], 0x220);
+  memcpy(g_zenv.ppu->oam, oam_buf, 0x220);
 
   if (nmi_load_bg_from_vram) {
     const uint8 *p;
-    switch (nmi_load_bg_from_vram) {
-    case 1: p = g_ram + 0x1002; break;
-    case 2: p = g_ram + 0x1000; break;
-    case 3: p = kBgTilemap_0; break;
-    case 4: p = g_ram + 0x21b; break;
-    case 5: p = kBgTilemap_1; break;
-    case 6: p = kBgTilemap_2; break;
-    case 7: p = kBgTilemap_3; break;
-    case 8: p = kBgTilemap_4; break;
-    case 9: p = kBgTilemap_5; break;
-    default: assert(0);
+    if (EmuSeedRomActive()) {
+      p = SeedOracle_JpNmiStripePointer(nmi_load_bg_from_vram);
+    } else {
+      switch (nmi_load_bg_from_vram) {
+      case 1: p = (uint8*)vram_upload_data; break;
+      case 2: p = (uint8*)&uvram_screen; break;
+      case 3: p = kBgTilemap_0; break;
+      case 4: p = nmi_stripe_buffer; break;
+      case 5: p = kBgTilemap_1; break;
+      case 6: p = kBgTilemap_2; break;
+      case 7: p = kBgTilemap_3; break;
+      case 8: p = kBgTilemap_4; break;
+      case 9: p = kBgTilemap_5; break;
+      default: assert(0);
+      }
     }
     HandleStripes14(p);
     if (nmi_load_bg_from_vram == 1)
@@ -237,8 +244,13 @@ void NMI_DoUpdates() {  // 8089e0
     nmi_load_bg_from_vram = 0;
   }
 
+  // z3randomizer $80:8BE5 -> $A2:DD03: after the $14 stripe upload, apply
+  // the name-entry row table when Module04 is in the naming state.
+  if (EmuSeedRomActive() && main_module_index == 4 && submodule_index == 2)
+    SeedOracle_JpNameEntryUpload();
+
   if (nmi_update_tilemap_dst) {
-    memcpy(&g_zenv.vram[nmi_update_tilemap_dst * 256], &g_ram[0x10000 + nmi_update_tilemap_src], 0x200);
+    memcpy(&g_zenv.vram[nmi_update_tilemap_dst * 256], ((uint8*)messaging_buf + nmi_update_tilemap_src), 0x200);
     nmi_update_tilemap_dst = 0;
   }
 
@@ -272,10 +284,46 @@ void NMI_DoUpdates() {  // 8089e0
   kNmiSubroutines[idx]();
 }
 
-void NMI_UploadTilemap() {  // 808cb0
-  memcpy(&g_zenv.vram[kNmiVramAddrs[BYTE(nmi_load_target_addr)] << 8], &g_ram[0x1000], 0x800);
+// Mirrors the Link-specific part of NMI_DoUpdates, but writes into a RAM shadow
+// of VRAM 0x4000..0x43ff. The caller runs this while player 2's Link variables
+// (and its DMA source addresses) are live in g_ram. Player 1 keeps using the
+// real VRAM; see Ppu.linkChr and docs/engine/COOP-MODELO-B.md.
+void NMI_LoadPlayer2LinkChr(uint16 *dst) {
+  memcpy(&dst[0x100], &kLinkGraphics[dma_source_addr_0 - 0x8000], 0x40);
+  memcpy(&dst[0x120], &kLinkGraphics[dma_source_addr_1 - 0x8000], 0x40);
+  memcpy(&dst[0x140], &kLinkGraphics[dma_source_addr_2 - 0x8000], 0x20);
 
-  *(uint16 *)&g_ram[0x1000] = 0;
+  memcpy(&dst[0x000], &kLinkGraphics[dma_source_addr_3 - 0x8000], 0x40);
+  memcpy(&dst[0x020], &kLinkGraphics[dma_source_addr_4 - 0x8000], 0x40);
+  memcpy(&dst[0x040], &kLinkGraphics[dma_source_addr_5 - 0x8000], 0x20);
+
+  memcpy(&dst[0x050], &g_ram[dma_source_addr_6], 0x40);
+  memcpy(&dst[0x070], &g_ram[dma_source_addr_7], 0x40);
+  memcpy(&dst[0x090], &g_ram[dma_source_addr_8], 0x40);
+  memcpy(&dst[0x0b0], &g_ram[dma_source_addr_9], 0x20);
+  memcpy(&dst[0x0c0], &g_ram[dma_source_addr_10], 0x40);
+  memcpy(&dst[0x150], &g_ram[dma_source_addr_11], 0x40);
+  memcpy(&dst[0x170], &g_ram[dma_source_addr_12], 0x40);
+  memcpy(&dst[0x190], &g_ram[dma_source_addr_13], 0x40);
+  memcpy(&dst[0x1b0], &g_ram[dma_source_addr_14], 0x20);
+  memcpy(&dst[0x1c0], &g_ram[dma_source_addr_15], 0x40);
+  memcpy(&dst[0x200], &g_ram[dma_source_addr_16], 0x40);
+  memcpy(&dst[0x220], &g_ram[dma_source_addr_17], 0x40);
+  memcpy(&dst[0x240], (gfx_4bpp_buffer + 0x2d40), 0x40);
+  memcpy(&dst[0x300], &g_ram[dma_source_addr_18], 0x40);
+  memcpy(&dst[0x320], &g_ram[dma_source_addr_19], 0x40);
+  memcpy(&dst[0x340], (gfx_4bpp_buffer + 0x2d80), 0x40);
+
+  if (BYTE(flag_travel_bird)) {
+    memcpy(&dst[0x0e0], &g_ram[dma_source_addr_20], 0x40);
+    memcpy(&dst[0x1e0], &g_ram[dma_source_addr_21], 0x40);
+  }
+}
+
+void NMI_UploadTilemap() {  // 808cb0
+  memcpy(&g_zenv.vram[kNmiVramAddrs[BYTE(nmi_load_target_addr)] << 8], (uint8*)&uvram_screen, 0x800);
+
+  vram_upload_offset = 0;
   nmi_disable_core_updates = 0;
 }
 
@@ -283,7 +331,9 @@ void NMI_UploadTilemap_doNothing() {  // 808ce3
 }
 
 void NMI_UploadBG3Text() {  // 808ce4
-  memcpy(&g_zenv.vram[0x7c00], &g_ram[0x10000], 0x7e0);
+  // JP 1.0 uploads $780 bytes ($80:8D02); the US ROM uploads $7E0.
+  memcpy(&g_zenv.vram[0x7c00], (uint8*)messaging_buf,
+         EmuSeedRomActive() ? 0x780 : 0x7e0);
   nmi_disable_core_updates = 0;
 }
 
@@ -303,7 +353,7 @@ void NMI_UpdateOWScroll() {  // 808d13
 }
 
 void NMI_UpdateSubscreenOverlay() {  // 808d62
-  NMI_HandleArbitraryTileMap(&g_ram[0x12000], 0, 0x80);
+  NMI_HandleArbitraryTileMap(dung_bg2_attr_table, 0, 0x80);
 }
 
 void NMI_HandleArbitraryTileMap(const uint8 *src, int i, int i_end) {  // 808dae
@@ -317,8 +367,8 @@ void NMI_HandleArbitraryTileMap(const uint8 *src, int i, int i_end) {  // 808dae
 
 void NMI_UpdateBG1Wall() {  // 808e09
   // Secret Wall Right
-  CopyToVramVertical(nmi_load_target_addr, &g_ram[0xc880], 0x40);
-  CopyToVramVertical(nmi_load_target_addr + 0x800, &g_ram[0xc8c0], 0x40);
+  CopyToVramVertical(nmi_load_target_addr, (const uint8*)moving_wall_arr1, 0x40);
+  CopyToVramVertical(nmi_load_target_addr + 0x800, (const uint8*)moving_wall_arr2, 0x40);
 }
 
 void NMI_TileMapNothing() {  // 808e4b
@@ -338,22 +388,22 @@ void NMI_UpdateLoadLightWorldMap() {  // 808e54
 }
 
 void NMI_UpdateBG2Left() {  // 808ea9
-  CopyToVram(0, &g_ram[0x10000], 0x800);
-  CopyToVram(0x800, &g_ram[0x10800], 0x800);
+  CopyToVram(0, (uint8*)messaging_buf, 0x800);
+  CopyToVram(0x800, ((uint8*)messaging_buf + 0x800), 0x800);
 }
 
 void NMI_UpdateBGChar3and4() {  // 808ee7
-  memcpy(&g_zenv.vram[0x2c00], &g_ram[0x10000], 0x1000);
+  memcpy(&g_zenv.vram[0x2c00], (uint8*)messaging_buf, 0x1000);
   nmi_disable_core_updates = 0;
 }
 
 void NMI_UpdateBGChar5and6() {  // 808f16
-  memcpy(&g_zenv.vram[0x3400], &g_ram[0x11000], 0x1000);
+  memcpy(&g_zenv.vram[0x3400], ((uint8*)messaging_buf + 0x1000), 0x1000);
   nmi_disable_core_updates = 0;
 }
 
 void NMI_UpdateBGCharHalf() {  // 808f45
-  memcpy(&g_zenv.vram[BYTE(nmi_load_target_addr) * 256], &g_ram[0x11000], 0x400);
+  memcpy(&g_zenv.vram[BYTE(nmi_load_target_addr) * 256], ((uint8*)messaging_buf + 0x1000), 0x400);
 }
 
 void NMI_UpdateBGChar0() {  // 808f72
@@ -373,7 +423,7 @@ void NMI_UpdateBGChar3() {  // 808f87
 }
 
 void NMI_UpdateObjChar0() {  // 808f8e
-  CopyToVram(0x4400, &g_ram[0x10000], 0x800);
+  CopyToVram(0x4400, (uint8*)messaging_buf, 0x800);
   nmi_disable_core_updates = 0;
 }
 
@@ -386,12 +436,12 @@ void NMI_UpdateObjChar3() {  // 808fc4
 }
 
 void NMI_RunTileMapUpdateDMA(int dst) {  // 808fc9
-  CopyToVram(dst, &g_ram[0x10000], 0x1000);
+  CopyToVram(dst, (uint8*)messaging_buf, 0x1000);
   nmi_disable_core_updates = 0;
 }
 
 void NMI_UploadDarkWorldMap() {  // 808ff3
-  const uint8 *src = g_ram + 0x1000;
+  const uint8 *src = (uint8*)&uvram_screen;
   int t = 0x810;
   for (int i = 0x20; i; i--) {
     CopyToVramLow(src, t, 0x20);
@@ -401,16 +451,16 @@ void NMI_UploadDarkWorldMap() {  // 808ff3
 }
 
 void NMI_UploadGameOverText() {  // 809038
-  CopyToVram(0x7800, &g_ram[0x2000], 0x800);
-  CopyToVram(0x7d00, &g_ram[0x3400], 0x600);
+  CopyToVram(0x7800, (const uint8*)dung_bg2, 0x800);
+  CopyToVram(0x7d00, ((const uint8*)dung_bg2 + 0x1400), 0x600);
 }
 
 void NMI_UpdatePegTiles() {  // 80908b
-  CopyToVram(0x3d00, &g_ram[0x10000], 0x100);
+  CopyToVram(0x3d00, (uint8*)messaging_buf, 0x100);
 }
 
 void NMI_UpdateStarTiles() {  // 8090b7
-  CopyToVram(0x3ed0, &g_ram[0x10000], 0x40);
+  CopyToVram(0x3ed0, (uint8*)messaging_buf, 0x40);
 }
 
 void HandleStripes14(const uint8 *p) {  // 8092a1
@@ -454,7 +504,7 @@ void HandleStripes14(const uint8 *p) {  // 8092a1
 
 void NMI_UpdateIRQGFX() {  // 809347
   if (nmi_flag_update_polyhedral) {
-    memcpy(&g_zenv.vram[0x5800], &g_ram[0xe800], 0x800);
+    memcpy(&g_zenv.vram[0x5800], polyhedral_buffer, 0x800);
     nmi_flag_update_polyhedral = 0;
   }
 }

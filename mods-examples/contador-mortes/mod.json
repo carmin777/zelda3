@@ -1,0 +1,9 @@
+{
+  "id": "contador-mortes",
+  "name": "Contador de mortes por slot",
+  "version": "1.0.0",
+  "api": 1,
+  "enabled": true,
+  "priority": 0,
+  "script": "main.lua"
+}

@@ -1,8 +1,10 @@
 #include "tile_detect.h"
 #include "zelda_rtl.h"
+#include "zelda_cpu_infra.h"
 #include "ancilla.h"
 #include "variables.h"
 #include "overworld.h"
+#include "mod/seed_oracle.h"
 
 static const uint8 kDetectTiles_tab0[] = { 8, 24, 0, 15 };
 static const uint8 kDetectTiles_tab1[] = { 0, 0, 8, 8 };

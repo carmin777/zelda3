@@ -33,8 +33,9 @@ enum {
   kWindow2Enabled = 8,
 };
 
-Ppu* ppu_init() {
+Ppu* ppu_init(Snes* snes) {
   Ppu* ppu = (Ppu * )malloc(sizeof(Ppu));
+  ppu->emuRomMode = false;
   ppu->extraLeftRight = kPpuExtraLeftRight;
   return ppu;
 }
@@ -58,6 +59,8 @@ void ppu_reset(Ppu* ppu) {
   ppu->cgramSecondWrite = false;
   ppu->cgramBuffer = 0;
   memset(ppu->oam, 0, sizeof(ppu->oam));
+  memset(ppu->linkChr, 0, sizeof(ppu->linkChr));
+  memset(ppu->oamIsPlayer2, 0, sizeof(ppu->oamIsPlayer2));
   ppu->oamAdr = 0;
   ppu->oamSecondWrite = false;
   ppu->oamBuffer = 0;
@@ -1287,7 +1290,11 @@ static bool ppu_evaluateSprites(Ppu* ppu, int line) {
         // figure out which tile this uses, looping within 16x16 pages, and get it's data
         int usedCol = oam1 & 0x4000 ? spriteSize - 1 - col : col;
         int usedTile = ((((oam1 & 0xff) >> 4) + (row >> 3)) << 4) | (((oam1 & 0xf) + (usedCol >> 3)) & 0xf);
-        uint16 *addr = &ppu->vram[(objAdr + usedTile * 16 + (row & 0x7)) & 0x7fff];
+        uint16 *addr;
+        if (ppu->oamIsPlayer2[index >> 1] && !(oam1 & 0x100) && usedTile < 0x40)
+          addr = &ppu->linkChr[(usedTile * 16 + (row & 0x7)) & 0x3ff];
+        else
+          addr = &ppu->vram[(objAdr + usedTile * 16 + (row & 0x7)) & 0x7fff];
         uint32 plane = addr[0] | addr[8] << 16;
         // go over each pixel
         int px_left = IntMax(-(col + x + kPpuExtraLeftRight), 0);
@@ -1328,7 +1335,10 @@ void ppu_write(Ppu* ppu, uint8_t adr, uint8_t val) {
       break;
     }
     case 0x01: {
-      assert(val == 2);
+      // OBSEL: the native game always uses 2.  A full randomizer ROM may pick
+      // another sprite size during boot, which is only accepted in --emu-rom.
+      if (!ppu->emuRomMode)
+        assert(val == 2);
       break;
     }
     case 0x02: {
@@ -1337,7 +1347,8 @@ void ppu_write(Ppu* ppu, uint8_t adr, uint8_t val) {
       break;
     }
     case 0x03: {
-      assert((val & 0x80) == 0);
+      if (!ppu->emuRomMode)
+        assert((val & 0x80) == 0);
       ppu->oamAdr = (ppu->oamAdr & ~0xff00) | ((val & 1) << 8);
       ppu->oamSecondWrite = false;
       break;
@@ -1354,9 +1365,14 @@ void ppu_write(Ppu* ppu, uint8_t adr, uint8_t val) {
     }
     case 0x05: {  // BGMODE
       ppu->mode = val & 0x7;
-      assert(val == 7 || val == 9);
-      assert(ppu->mode == 1 || ppu->mode == 7);
-      assert((val & 0xf0) == 0);
+      // The native game only uses modes 1 and 7.  A randomizer ROM is free to
+      // program other modes while booting, so --emu-rom lets the renderer
+      // draw what it supports instead of asserting.
+      if (!ppu->emuRomMode) {
+        assert(val == 7 || val == 9);
+        assert(ppu->mode == 1 || ppu->mode == 7);
+        assert((val & 0xf0) == 0);
+      }
       break;
     }
     case 0x06: {  // MOSAIC

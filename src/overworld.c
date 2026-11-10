@@ -1,4 +1,6 @@
 #include "overworld.h"
+#include "zelda_cpu_infra.h"
+#include "mod/seed_oracle.h"
 #include "hud.h"
 #include "load_gfx.h"
 #include "dungeon.h"
@@ -11,8 +13,10 @@
 #include "player_oam.h"
 #include "snes/snes_regs.h"
 #include "assets.h"
+#include "mod/events.h"
+#include "mod/hooks.h"
 
-const uint16 kOverworld_OffsetBaseX[64] = {
+const uint16 kOverworld_OffsetBaseX[192] = {
   0,     0, 0x400, 0x600, 0x600, 0xa00, 0xa00, 0xe00,
   0,     0, 0x400, 0x600, 0x600, 0xa00, 0xa00, 0xe00,
   0, 0x200, 0x400, 0x600, 0x800, 0xa00, 0xc00, 0xe00,
@@ -21,8 +25,28 @@ const uint16 kOverworld_OffsetBaseX[64] = {
   0, 0x200, 0x400, 0x600, 0x800, 0xa00, 0xc00, 0xe00,
   0,     0, 0x400, 0x600, 0x800, 0xa00, 0xa00, 0xe00,
   0,     0, 0x400, 0x600, 0x800, 0xa00, 0xa00, 0xe00,
+  // [64..191]: ROM bytes read past the 64-entry table by the 65816 code,
+  // which indexes with (overworld_screen_index & $00bf) at $82:ab53;
+  // the mask makes 191 the largest possible index.
+  0x16ad, 0xf004, 0x2003, 0xf273, 0x20c2, 0x30a5, 0xff29, 0xf000,  // [64..71] = $82a9c4
+  0xa523, 0x2967, 0x000c, 0x0085, 0x00ae, 0xa507, 0x3820, 0xc4ff,  // [72..79] = $82a9d4
+  0x02a8, 0x06a0, 0x08a2, 0x04c9, 0x9000, 0xa03b, 0xa204, 0xcd04,  // [80..87] = $82a9e4
+  0x0716, 0x32b0, 0x31a5, 0xff29, 0xf000, 0xad2f, 0x0716, 0x6918,  // [88..95] = $82a9f4
+  0x0004, 0x0285, 0x67a5, 0x0329, 0x8500, 0xae00, 0x0700, 0x22a5,  // [96..103] = $82aa04
+  0xff38, 0xa944, 0xa002, 0xa202, 0xc902, 0x0006, 0x0890, 0x00a0,  // [104..111] = $82aa14
+  0x01a2, 0x02c5, 0x0490, 0x00e4, 0x05f0, 0x4922, 0x0ede, 0xe260,  // [112..119] = $82aa24
+  0x2220, 0xf439, 0xb007, 0x84f3, 0x6402, 0x2003, 0x8b0c, 0x31c2,  // [120..127] = $82aa34
+  0x02a6, 0x84a5, 0x2c3f, 0x02a6, 0x8485, 0x00ad, 0x1807, 0x347f,  // [128..135] = $82aa44
+  0x02a8,  // [136..136] = $82aa54
+  0x8548, 0x8a04, 0x0a0a, 0x0a0a, 0x0a0a, 0x0405, 0xa5aa, 0x1884,  // [137..144] = $82aa56
+  0x347f, 0x02a6, 0x8485, 0x4a68, 0xe2aa, 0xa530, 0x488a, 0x2ac9,  // [145..152] = $82aa66
+  0x05d0, 0x80a9, 0x2d8d, 0xbf01, 0xa5ec, 0x0f02, 0xf3ca, 0x857e,  // [153..160] = $82aa76
+  0x8d8a, 0x040a, 0xafaa, 0xf3ca, 0xf07e, 0xaf06, 0xf357, 0xf07e,  // [161..168] = $82aa86
+  0xbf1f, 0x5b00, 0x4a7f, 0x4a4a, 0xd04a, 0xa905, 0x8d05, 0x012d,  // [169..176] = $82aa96
+  0x00bf, 0x7f5b, 0x0f29, 0x30cd, 0xf001, 0xa905, 0x8df1, 0x012c,  // [177..184] = $82aaa6
+  0x0820, 0xa9ab, 0x8501, 0xa511, 0x8d00, 0x0410, 0x168d,  // [185..191] = $82aab6
 };
-const uint16 kOverworld_OffsetBaseY[64] = {
+const uint16 kOverworld_OffsetBaseY[192] = {
       0,     0,     0,     0,     0,     0,     0,     0,
       0,     0, 0x200,     0,     0,     0,     0, 0x200,
   0x400, 0x400, 0x400, 0x400, 0x400, 0x400, 0x400, 0x400,
@@ -31,6 +55,26 @@ const uint16 kOverworld_OffsetBaseY[64] = {
   0xa00, 0xa00, 0xa00, 0xa00, 0xa00, 0xa00, 0xa00, 0xa00,
   0xc00, 0xc00, 0xc00, 0xc00, 0xc00, 0xc00, 0xc00, 0xc00,
   0xc00, 0xc00, 0xe00, 0xe00, 0xe00, 0xc00, 0xc00, 0xe00,
+  // [64..191]: ROM bytes read past the 64-entry table by the 65816 code,
+  // which indexes with (overworld_screen_index & $00bf) at $82:ab5a;
+  // the mask makes 191 the largest possible index.
+  0x0000, 0x0000, 0x0400, 0x0600, 0x0600, 0x0a00, 0x0a00, 0x0e00,  // [64..71] = $82a944
+  0x0000, 0x0000, 0x0400, 0x0600, 0x0600, 0x0a00, 0x0a00, 0x0e00,  // [72..79] = $82a954
+  0x0000, 0x0200, 0x0400, 0x0600, 0x0800, 0x0a00, 0x0c00, 0x0e00,  // [80..87] = $82a964
+  0x0000, 0x0000, 0x0400, 0x0600, 0x0600, 0x0a00, 0x0c00, 0x0c00,  // [88..95] = $82a974
+  0x0000, 0x0000, 0x0400, 0x0600, 0x0600, 0x0a00, 0x0c00, 0x0c00,  // [96..103] = $82a984
+  0x0000, 0x0200, 0x0400, 0x0600, 0x0800, 0x0a00, 0x0c00, 0x0e00,  // [104..111] = $82a994
+  0x0000, 0x0000, 0x0400, 0x0600, 0x0800, 0x0a00, 0x0a00, 0x0e00,  // [112..119] = $82a9a4
+  0x0000, 0x0000, 0x0400, 0x0600, 0x0800, 0x0a00, 0x0a00, 0x0e00,  // [120..127] = $82a9b4
+  0x16ad, 0xf004, 0x2003, 0xf273, 0x20c2, 0x30a5, 0xff29, 0xf000,  // [128..135] = $82a9c4
+  0xa523,  // [136..136] = $82a9d4
+  0x2967, 0x000c, 0x0085, 0x00ae, 0xa507, 0x3820, 0xc4ff, 0x02a8,  // [137..144] = $82a9d6
+  0x06a0, 0x08a2, 0x04c9, 0x9000, 0xa03b, 0xa204, 0xcd04, 0x0716,  // [145..152] = $82a9e6
+  0x32b0, 0x31a5, 0xff29, 0xf000, 0xad2f, 0x0716, 0x6918, 0x0004,  // [153..160] = $82a9f6
+  0x0285, 0x67a5, 0x0329, 0x8500, 0xae00, 0x0700, 0x22a5, 0xff38,  // [161..168] = $82aa06
+  0xa944, 0xa002, 0xa202, 0xc902, 0x0006, 0x0890, 0x00a0, 0x01a2,  // [169..176] = $82aa16
+  0x02c5, 0x0490, 0x00e4, 0x05f0, 0x4922, 0x0ede, 0xe260, 0x2220,  // [177..184] = $82aa26
+  0xf439, 0xb007, 0x84f3, 0x6402, 0x2003, 0x8b0c, 0x31c2,  // [185..191] = $82aa36
 };
 static const uint16 kOverworld_UpDownScrollTarget[64] = {
   0xff20, 0xff20, 0xff20, 0xff20, 0xff20, 0xff20, 0xff20, 0xff20,
@@ -77,14 +121,6 @@ static PlayerHandlerFunc *const kOverworld_EntranceSequence[5] = {
   &Overworld_AnimateEntrance_TurtleRock,
   &Overworld_AnimateEntrance_GanonsTower,
 };
-#ifndef map16_decode_0
-#define map16_decode_0 ((uint8*)(g_ram+0x14400))
-#define map16_decode_1 ((uint8*)(g_ram+0x14410))
-#define map16_decode_2 ((uint8*)(g_ram+0x14420))
-#define map16_decode_3 ((uint8*)(g_ram+0x14430))
-#define map16_decode_last (*(uint16*)(g_ram+0x14440))
-#define map16_decode_tmp (*(uint16*)(g_ram+0x14442))
-#endif
 static const uint16 kSecondaryOverlayPerOw[128] = {
   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
   0x1c0c, 0x1c0c, 0, 0, 0, 0, 0, 0, 0x1c0c, 0x1c0c, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -153,7 +189,7 @@ static const int16 kSwitchAreaTab1[256] = {
 };
 static const int16 kSwitchAreaTab3[4] = { 2, -2, 16, -16 };
 // kOverworldAreaHeads[i] != i for subregions of a big area
-static const uint8 kOverworldAreaHeads[64] = {
+uint8 kOverworldAreaHeads[64] = {
   0,  0,  2,  3,  3,  5,  5,  7,
   0,  0, 10,  3,  3,  5,  5, 15,
   16, 17, 18, 19, 20, 21, 22, 23,
@@ -244,10 +280,14 @@ static PlayerHandlerFunc *const kModule_PreOverworld[3] = {
   &Module08_02_LoadAndAdvance,
 };
 const uint8 *GetMap8toTileAttr() {
+  if (EmuSeedRomActive())
+    return SeedOracle_JpMap8TileAttrTable();
   return kMap8DataToTileAttr;
 }
 
 const uint16 *GetMap16toMap8Table() {
+  if (EmuSeedRomActive())
+    return SeedOracle_JpMap16ToMap8();
   return kMap16ToMap8;
 }
 
@@ -407,9 +447,15 @@ void MirrorWarp_BuildDewavingHDMATable() {  // 80ff2f
 void TakeDamageFromPit() {  // 81ffd9
   link_visibility_status = 12;
   submodule_index = player_is_indoors ? 20 : 42;
-  link_health_current -= 8;
-  if (link_health_current >= 0xa8)
+  uint8 health_before = link_health_current;
+  uint8 damage = (uint8)MOD_FILTER(kModFilter_LinkDamage, 8, kModLinkDamage_Pit);
+  if (damage >= health_before)
     link_health_current = 0;
+  else
+    link_health_current = health_before - damage;
+  MOD_EMIT(kModEv_LinkDamage, health_before - link_health_current, health_before, 0);
+  if (link_health_current == 0)
+    MOD_EMIT(kModEv_LinkDeath, 0, 0, 0);
 }
 
 void Module08_OverworldLoad() {  // 8283bf
@@ -424,6 +470,8 @@ void PreOverworld_LoadProperties() {  // 8283c7
     LoadOverworldFromDungeon();
   else
     LoadOverworldFromSpecialOverworld();
+  if (EmuSeedRomActive())
+    Hud_LoadOverworldBlankTiles();  // z3r HUD tilemap at the dungeon exit
   Overworld_SetSongList();
   link_num_keys = 0xff;
   Hud_RefillLogic();
@@ -458,7 +506,10 @@ dark:
 setsong:
   queued_music_control = xt;
   DecompressAnimatedOverworldTiles(ow_anim_tiles);
-  InitializeTilesets();
+  if (EmuSeedRomActive())
+    SeedOracle_JpInitializeTilesets();
+  else
+    InitializeTilesets();
   OverworldLoadScreensPaletteSet();
   Overworld_LoadPalettes(kOverworldBgPalettes[sc], overworld_sprite_palettes[sc]);
   Palette_SetOwBgColor();
@@ -542,6 +593,12 @@ void RecoverPositionAfterDrowning() {  // 829583
   WORD(quadrant_fullsize_x) = WORD(quadrant_fullsize_x_cached);
   WORD(link_quadrant_x) = WORD(link_quadrant_x_cached);
   if (!player_is_indoors) {
+    if (EmuSeedRomActive()) {
+      // JP $82:9583 restores the cached low scroll outdoors too; the US
+      // path only restores the high value here.
+      camera_y_coord_scroll_low = camera_y_coord_scroll_low_cached;
+      camera_x_coord_scroll_low = camera_x_coord_scroll_low_cached;
+    }
     camera_y_coord_scroll_hi = camera_y_coord_scroll_low - 2;
     camera_x_coord_scroll_hi = camera_x_coord_scroll_low - 2;
   }
@@ -812,6 +869,7 @@ compare:
 after:
   y >>= 1;
   Dungeon_ResetTorchBackgroundAndPlayerInner();
+  uint16 saved_map16_load_src_off = map16_load_src_off;
   map16_load_src_off &= kSwitchAreaTab0[y];
   int pushed = ((current_area_of_player + kSwitchAreaTab3[y]) >> 1) & 0x3f;
   map16_load_src_off += kSwitchAreaTab1[y * 64 + pushed];
@@ -819,11 +877,31 @@ after:
   uint8 old_screen = overworld_screen_index;
   if (old_screen == 0x2a)
     sound_effect_ambient = 0x80;
+  if (EmuSeedRomActive()) {
+    // JP $82:A968: screen-specific overworld music changes.
+    if (old_screen == 0x68 && music_unk1 == 0x0e)
+      music_control = 9;
+    if (old_screen == 0x18)
+      music_control = 0xf1;  // seed ROM NOPs the progress check
+  }
 
   uint8 new_area = kOverworldAreaHeads[pushed] | savegame_is_darkworld;
+  new_area = (uint8)MOD_FILTER(kModFilter_OverworldTransitionTarget, new_area, dir);
+  // A mod can veto the transition by returning the current screen. It is then
+  // responsible for nudging Link back inside the edge. Without a filter
+  // subscriber this condition is never taken, so vanilla behavior is unchanged.
+  if (new_area == old_screen &&
+      (g_mod_filter_mask & (1u << kModFilter_OverworldTransitionTarget))) {
+    map16_load_src_off = saved_map16_load_src_off;
+    return;
+  }
   BYTE(overworld_screen_index) = new_area;
   BYTE(overworld_area_index) = new_area;
-  if (!savegame_is_darkworld || link_item_moon_pearl) {
+  if (EmuSeedRomActive() && new_area == 0x18)
+    music_control = 0xf1;  // seed ROM NOPs the progress check
+  MOD_EMIT(kModEv_OverworldTransition, new_area, dir, 0);
+  MOD_EMIT(kModEv_AreaEnter, new_area, old_screen, 0);
+  if (!EmuSeedRomActive() && (!savegame_is_darkworld || link_item_moon_pearl)) {
     uint8 music = overworld_music[new_area];
     if ((music & 0xf0) == 0)
       sound_effect_ambient = 5;
@@ -891,6 +969,8 @@ void ScrollAndCheckForSOWExit() {  // 82ab7b
 }
 
 void Module09_LoadAuxGFX() {  // 82ab88
+  if (EmuSeedRomActive())
+    SeedOracle_JpScreenTransition();  // z3r $A4:89EF -> $A0:B0FC
   save_ow_event_info[0x3b] &= ~0x20;
   save_ow_event_info[0x7b] &= ~0x20;
   save_dung_info[267] &= ~0x80;
@@ -1028,20 +1108,24 @@ void Overworld_DoMapUpdate32x32() {  // 82ad85
   int j = door_open_closed_counter >> 1;
   uint16 pos, tile;
 
+  uint16 tiles[4];
+  for (int k = 0; k < 4; k++)
+    tiles[k] = EmuSeedRomActive() ? SeedOracle_JpDoorAnimTile(j + k) : kDoorAnimTiles[j + k];
+
   memorized_tile_addr[i] = pos = big_rock_starting_address;
-  memorized_tile_value[i] = tile = kDoorAnimTiles[j + 0];
+  memorized_tile_value[i] = tile = tiles[0];
   Overworld_DrawMap16_Persist(pos, tile);
 
   memorized_tile_addr[i + 1] = pos = big_rock_starting_address + 2;
-  memorized_tile_value[i + 1] = tile = kDoorAnimTiles[j + 1];
+  memorized_tile_value[i + 1] = tile = tiles[1];
   Overworld_DrawMap16_Persist(pos, tile);
 
   memorized_tile_addr[i + 2] = pos = big_rock_starting_address + 0x80;
-  memorized_tile_value[i + 2] = tile = kDoorAnimTiles[j + 2];
+  memorized_tile_value[i + 2] = tile = tiles[2];
   Overworld_DrawMap16_Persist(pos, tile);
 
   memorized_tile_addr[i + 3] = pos = big_rock_starting_address + 0x82;
-  memorized_tile_value[i + 3] = tile = kDoorAnimTiles[j + 3];
+  memorized_tile_value[i + 3] = tile = tiles[3];
   Overworld_DrawMap16_Persist(pos, tile);
   vram_upload_data[vram_upload_offset >> 1] = 0xffff;
   num_memorized_tiles += 8;
@@ -1161,7 +1245,13 @@ load_overlay:
   CGWSEL_copy = 0x82;
   TM_copy = 0x16;
   TS_copy = 1;
-  sound_effect_ambient = overworld_music[BYTE(overworld_screen_index)] >> 4;
+  if (EmuSeedRomActive()) {
+    // JP $82:AF63 sets the ambient only for the rain overlay ($9F).
+    if (xv == 0x9f)
+      sound_effect_ambient = 1;
+  } else {
+    sound_effect_ambient = overworld_music[BYTE(overworld_screen_index)] >> 4;
+  }
 
   if (xv == 0x97 || xv == 0x94 || xv == 0x93 || xv == 0x9d || xv == 0x9e || xv == 0x9f)
     CGADSUB_copy = 0x72;
@@ -1354,7 +1444,7 @@ void MirrorWarp_LoadSpritesAndColors() {  // 82b334
     map16_load_var2 = (0x390 - 0x400 & 0xf80) >> 7;
     map16_load_dst_off = (0x390 - 0x10 & 0x3e) >> 1;
   }
-  Map16ToMap8(&g_ram[0x2000], 0);
+  Map16ToMap8((const uint8*)dung_bg2, 0);
   map16_load_var2 = bak3;
   map16_load_dst_off = bak2;
   map16_load_src_off = bak1;
@@ -1690,6 +1780,8 @@ int OverworldScrollTransition() {  // 82c001
   Overworld_SetCameraBoundaries(overworld_area_is_big != 0, (current_area_of_player >> 1) + kOverworld_Func6B_AreaDelta[y]);
 
   flag_overworld_area_did_change = 1;
+  if (EmuSeedRomActive())
+    g_ram[0x21B] = 1;  // z3r $A0:81FF SetOverworldTransitionFlags
   submodule_index += 1;
   subsubmodule_index = 0;
   transition_counter = 0;
@@ -1718,10 +1810,16 @@ void Overworld_FinalizeEntryOntoScreen() {  // 82c242
   if ((d & 0xfe) == kOverworld_Func8_tab[byte_7E069C]) {
     submodule_index = 0;
     subsubmodule_index = 0;
-    uint8 m = overworld_music[BYTE(overworld_screen_index)];
-    sound_effect_ambient = m >> 4;
-    if (music_unk1 == 0xf1)
-      music_control = m & 0xf;
+    if (EmuSeedRomActive()) {
+      uint8 m = SeedOracle_JpOverworldMusic();
+      if (!ZeldaIsPlayingMusicTrack(m))
+        music_control = m;
+    } else {
+      uint8 m = overworld_music[BYTE(overworld_screen_index)];
+      sound_effect_ambient = m >> 4;
+      if (music_unk1 == 0xf1)
+        music_control = m & 0xf;
+    }
   }
   Overworld_OperateCameraScroll();
   if (BYTE(overworld_screen_trans_dir_bits2))
@@ -1759,6 +1857,8 @@ void Overworld_ResetMosaic_alwaysIncrease() {  // 82c2eb
 }
 
 void Overworld_SetSongList() {  // 82c463
+  if (EmuSeedRomActive())
+    return;  // JP keeps the text-width table at $7F:5B00
   uint8 r0 = 2, y = 0xc0;
   if (sram_progress_indicator < 3) {
     y = 0x80;
@@ -1778,6 +1878,10 @@ void LoadOverworldFromDungeon() {  // 82e4a3
   player_is_indoors = 0;
   hdr_dungeon_dark_with_lantern = 0;
   WORD(overworld_fixed_color_plusminus) = 0;
+  // z3r OnDungeonExit replaces the original store that clears DungeonID
+  // ($82:E21B in the JP ROM). Emit before we clear it so the mod sees the
+  // palace that is being left.
+  MOD_EMIT(kModEv_DungeonExit, cur_palace_index_x2, 0, 0);
   cur_palace_index_x2 = 0xff;
   num_memorized_tiles = 0;
 
@@ -1979,7 +2083,13 @@ void LoadOverworldFromSpecialOverworld() {  // 82e9bc
 void FluteMenu_LoadTransport() {  // 82ec39
   num_memorized_tiles = 0;
   int k = birdtravel_var1[0];
-  WORD(birdtravel_var1[0]) <<= 1;
+  if (k < 8 && (g_mod_filter_mask & (1u << kModFilter_BirdTravelDestination))) {
+    k = ModHooks_Filter(kModFilter_BirdTravelDestination, k, birdtravel_var1[1]);
+    birdtravel_var1[0] = (uint8)k;
+    WORD(birdtravel_var1[0]) <<= 1;
+  } else {
+    WORD(birdtravel_var1[0]) <<= 1;
+  }
   Overworld_LoadBirdTravelPos(k);
 }
 
@@ -2040,7 +2150,7 @@ void Overworld_LoadAmbientOverlay(bool load_map_data) {  // 82ed25
   if (load_map_data)
     Overworld_DrawQuadrantsAndOverlays();
 
-  Map16ToMap8(&g_ram[0x2000], 0);
+  Map16ToMap8((const uint8*)dung_bg2, 0);
   map16_load_var2 = bak3;
   map16_load_dst_off = bak2;
   map16_load_src_off = bak1;
@@ -2068,8 +2178,9 @@ void Module08_02_LoadAndAdvance() {  // 82edb9
 
 void Overworld_DrawQuadrantsAndOverlays() {  // 82eec5
   Overworld_DecompressAndDrawAllQuadrants();
+  uint16 blank = EmuSeedRomActive() ? SeedOracle_JpOverworldBlankTile() : 0xdc4;
   for (int i = 0; i < 16 * 4; i++)
-    dung_bg1[i] = 0xdc4;
+    dung_bg1[i] = blank;
   uint16 pos = ow_entrance_value;
   if (pos != 0 && pos != 0xffff) {
     if (pos < 0x8000) {
@@ -2131,8 +2242,9 @@ void TriggerAndFinishMapLoadStripe_X(int n) {  // 82efb3
 
 void SomeTileMapChange() {  // 82efe8
   Overworld_DecompressAndDrawAllQuadrants();
+  uint16 blank = EmuSeedRomActive() ? SeedOracle_JpOverworldBlankTile() : 0xdc4;
   for (int i = 0; i < 64; i++)
-    dung_bg1[i] = 0xdc4;
+    dung_bg1[i] = blank;
   Overworld_HandleOverlaysAndBombDoors();
   submodule_index++;
 }
@@ -2442,33 +2554,37 @@ uint16 *BufferAndBuildMap16Stripes_Y(uint16 *dst) {  // 82f482
 
 void Overworld_DecompressAndDrawAllQuadrants() {  // 82f54a
   int si = overworld_screen_index;
-  Overworld_DecompressAndDrawOneQuadrant((uint16 *)&g_ram[0x2000], si + 0);
-  Overworld_DecompressAndDrawOneQuadrant((uint16 *)&g_ram[0x2040], si + 1);
-  Overworld_DecompressAndDrawOneQuadrant((uint16 *)&g_ram[0x3000], si + 8);
-  Overworld_DecompressAndDrawOneQuadrant((uint16 *)&g_ram[0x3040], si + 9);
+  Overworld_DecompressAndDrawOneQuadrant(dung_bg2, si + 0);
+  Overworld_DecompressAndDrawOneQuadrant(dung_bg2 + 0x20, si + 1);
+  Overworld_DecompressAndDrawOneQuadrant(dung_bg2 + 0x800, si + 8);
+  Overworld_DecompressAndDrawOneQuadrant(dung_bg2 + 0x820, si + 9);
 }
 
 static const uint8 *GetOverworldHibytes(int i) {
+  if (EmuSeedRomActive())
+    return SeedOracle_JpOverworldMap32Data(i, false);
   return kOverworld_Hibytes_Comp(i).ptr;
 }
 
 static const uint8 *GetOverworldLobytes(int i) {
+  if (EmuSeedRomActive())
+    return SeedOracle_JpOverworldMap32Data(i, true);
   return kOverworld_Lobytes_Comp(i).ptr;
 }
 
 
 void Overworld_DecompressAndDrawOneQuadrant(uint16 *dst, int screen) {  // 82f595
-  Decompress_bank02(&g_ram[0x14400], GetOverworldHibytes(screen));
+  Decompress_bank02(map16_decode_0, GetOverworldHibytes(screen));
   for (int i = 0; i < 256; i++)
-    g_ram[0x14001 + i * 2] = g_ram[0x14400 + i];
+    decomp_buffer[1 + i * 2] = map16_decode_0[i];
 
-  Decompress_bank02(&g_ram[0x14400], GetOverworldLobytes(screen));
+  Decompress_bank02(map16_decode_0, GetOverworldLobytes(screen));
   for (int i = 0; i < 256; i++)
-    g_ram[0x14000 + i * 2] = g_ram[0x14400 + i];
+    decomp_buffer[i * 2] = map16_decode_0[i];
 
   map16_decode_last = 0xffff;
 
-  uint16 *src = (uint16 *)&g_ram[0x14000];
+  uint16 *src = (uint16 *)decomp_buffer;
   for (int j = 0; j < 16; j++) {
     for (int i = 0; i < 16; i++) {
       Overworld_ParseMap32Definition(dst, *src++ * 2);
@@ -2485,7 +2601,10 @@ void Overworld_ParseMap32Definition(uint16 *dst, uint16 input) {  // 82f691
     map16_decode_tmp = a >> 1;
     int x = (a >> 1) + (a >> 2);
     const uint8 *ov;
-    ov = kMap32ToMap16_0 + x;
+    if (EmuSeedRomActive())
+      ov = SeedOracle_JpMap32ToMap16(0, x);
+    else
+      ov = kMap32ToMap16_0 + x;
 
     map16_decode_0[0] = ov[0];
     map16_decode_0[2] = ov[1];
@@ -2495,7 +2614,10 @@ void Overworld_ParseMap32Definition(uint16 *dst, uint16 input) {  // 82f691
     map16_decode_0[3] = ov[4] & 0xf;
     map16_decode_0[5] = ov[5] >> 4;
     map16_decode_0[7] = ov[5] & 0xf;
-    ov = kMap32ToMap16_1 + x;
+    if (EmuSeedRomActive())
+      ov = SeedOracle_JpMap32ToMap16(1, x);
+    else
+      ov = kMap32ToMap16_1 + x;
     map16_decode_1[0] = ov[0];
     map16_decode_1[2] = ov[1];
     map16_decode_1[4] = ov[2];
@@ -2504,7 +2626,10 @@ void Overworld_ParseMap32Definition(uint16 *dst, uint16 input) {  // 82f691
     map16_decode_1[3] = ov[4] & 0xf;
     map16_decode_1[5] = ov[5] >> 4;
     map16_decode_1[7] = ov[5] & 0xf;
-    ov = kMap32ToMap16_2 + x;
+    if (EmuSeedRomActive())
+      ov = SeedOracle_JpMap32ToMap16(2, x);
+    else
+      ov = kMap32ToMap16_2 + x;
     map16_decode_2[0] = ov[0];
     map16_decode_2[2] = ov[1];
     map16_decode_2[4] = ov[2];
@@ -2513,7 +2638,10 @@ void Overworld_ParseMap32Definition(uint16 *dst, uint16 input) {  // 82f691
     map16_decode_2[3] = ov[4] & 0xf;
     map16_decode_2[5] = ov[5] >> 4;
     map16_decode_2[7] = ov[5] & 0xf;
-    ov = kMap32ToMap16_3 + x;
+    if (EmuSeedRomActive())
+      ov = SeedOracle_JpMap32ToMap16(3, x);
+    else
+      ov = kMap32ToMap16_3 + x;
     map16_decode_3[0] = ov[0];
     map16_decode_3[2] = ov[1];
     map16_decode_3[4] = ov[2];
@@ -2531,12 +2659,12 @@ void Overworld_ParseMap32Definition(uint16 *dst, uint16 input) {  // 82f691
 
 void OverworldLoad_LoadSubOverlayMap32() {  // 82f7cb
   int si = overworld_screen_index;
-  Overworld_DecompressAndDrawOneQuadrant((uint16 *)&g_ram[0x4000], si);
+  Overworld_DecompressAndDrawOneQuadrant(dung_bg1, si);
 }
 
 void LoadOverworldOverlay() {  // 82fd0d
   OverworldLoad_LoadSubOverlayMap32();
-  Map16ToMap8(&g_ram[0x4000], 0x1000);
+  Map16ToMap8((const uint8*)dung_bg1, 0x1000);
   nmi_subroutine_index = nmi_disable_core_updates = 4;
   submodule_index++;
 }
@@ -2559,7 +2687,7 @@ void OverworldCopyMap16ToBuffer(const uint8 *src, uint16 r20, int r14, uint16 *r
 
   int yr = map16_load_src_off - 0x410 & 0x1fff;
   int xr = map16_load_dst_off;
-  uint16 *tmp = (uint16 *)(g_ram + 0x500);
+  uint16 *tmp = dung_replacement_tile_state;
   int n = 32;
   do {
     WORD(tmp[xr]) = WORD(src[yr]);
@@ -2593,7 +2721,7 @@ void MirrorBonk_RecoverChangedTiles() {  // 82fe47
 }
 
 void DecompressEnemyDamageSubclasses() {  // 82fe71
-  uint8 *tmp = &g_ram[0x14000];
+  uint8 *tmp = decomp_buffer;
   memcpy(tmp, kEnemyDamageData, kEnemyDamageData_SIZE);
   for (int i = 0; i < 0x1000; i += 2) {
     uint8 t = *tmp++;
@@ -2655,7 +2783,10 @@ int Decompress_bank02(uint8 *dst, const uint8 *src) {  // 82febb
 uint8 Overworld_ReadTileAttribute(uint16 x, uint16 y) {  // 85faa2
   int t = ((x - overworld_offset_base_x) & overworld_offset_mask_x);
   t |= ((y - overworld_offset_base_y) & overworld_offset_mask_y) << 3;
-  return kSomeTileAttr[dung_bg2[t >> 1]];
+  uint16 idx = dung_bg2[t >> 1];
+  if (EmuSeedRomActive())
+    return SeedOracle_JpTileAttribute(idx);
+  return kSomeTileAttr[idx];
 }
 
 void Overworld_SetFixedColAndScroll() {  // 8bfe70
@@ -3434,12 +3565,12 @@ uint8 SmashRockPile_fromLift(uint16 a, uint16 pos, uint16 y, Point16U pt) {  // 
   big_rock_starting_address = pos;
   door_open_closed_counter = 40;
 
-  *(uint16 *)&g_ram[0] = pt.y;
-  *(uint16 *)&g_ram[2] = pt.x;
+  R0 = pt.y;
+  R2 = pt.x;
 
   uint16 secret = Overworld_RevealSecret(pos);
-  pt.y = *(uint16 *)&g_ram[0];
-  pt.x = *(uint16 *)&g_ram[2];
+  pt.y = R0;
+  pt.x = R2;
 
   if (secret == 0xffff) {
     save_ow_event_info[overworld_screen_index] |= 0x20;

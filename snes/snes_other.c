@@ -9,6 +9,120 @@
 #include "cart.h"
 #include "ppu.h"
 #include "dsp.h"
+#include "dma.h"
+#include "apu.h"
+
+// Full-console frame runner used only by --emu-rom.  The normal zelda3 path
+// never calls this: it drives the CPU/PPU pieces from zelda_cpu_infra.c.
+static const double kApuCyclesPerMaster = (32040.0 * 32.0) / (1364.0 * 262.0 * 60.0);
+
+static void SnesCatchupApu(Snes *snes) {
+  int catchupCycles = (int)snes->apuCatchupCycles;
+  for (int i = 0; i < catchupCycles; i++)
+    apu_cycle(snes->apu);
+  snes->apuCatchupCycles -= (double)catchupCycles;
+}
+
+static void SnesRunCpu(Snes *snes) {
+  if (snes->cpuCyclesLeft == 0) {
+    snes->cpuMemOps = 0;
+    int cycles = cpu_runOpcode(snes->cpu);
+    snes->cpuCyclesLeft += (cycles - snes->cpuMemOps) * 6;
+  }
+  snes->cpuCyclesLeft -= 2;
+}
+
+static void SnesRunGfxCycles(Snes *snes) {
+  if (snes->vIrqEnabled && snes->hIrqEnabled) {
+    if (snes->vPos == snes->vTimer && snes->hPos == (4 * snes->hTimer)) {
+      snes->inIrq = true;
+      snes->cpu->irqWanted = true;
+    }
+  } else if (snes->vIrqEnabled && !snes->hIrqEnabled) {
+    if (snes->vPos == snes->vTimer && snes->hPos == 0) {
+      snes->inIrq = true;
+      snes->cpu->irqWanted = true;
+    }
+  } else if (!snes->vIrqEnabled && snes->hIrqEnabled) {
+    if (snes->hPos == (4 * snes->hTimer)) {
+      snes->inIrq = true;
+      snes->cpu->irqWanted = true;
+    }
+  }
+
+  if (snes->hPos == 0) {
+    bool startingVblank = false;
+    if (snes->vPos == 0) {
+      snes->inVblank = false;
+      snes->inNmi = false;
+      dma_initHdma(snes->dma);
+    } else if (snes->vPos == 225) {
+      startingVblank = true;
+    }
+    if (startingVblank) {
+      snes->inVblank = true;
+      snes->inNmi = true;
+      if (snes->autoJoyRead) {
+        snes->autoJoyTimer = 4224;
+        snes_doAutoJoypad(snes);
+      }
+      if (snes->nmiEnabled)
+        snes->cpu->nmiWanted = true;
+    }
+  } else if (snes->hPos == 512) {
+    if (!snes->inVblank)
+      ppu_runLine(snes->ppu, snes->vPos);
+  } else if (snes->hPos == 1024) {
+    if (!snes->inVblank)
+      dma_doHdma(snes->dma);
+  }
+
+  if (snes->autoJoyTimer > 0)
+    snes->autoJoyTimer -= 2;
+
+  snes->hPos += 2;
+  if (snes->hPos == 1364) {
+    snes->hPos = 0;
+    snes->vPos++;
+    if (snes->vPos == 262) {
+      snes->vPos = 0;
+      snes->frames++;
+      SnesCatchupApu(snes);
+    }
+  }
+}
+
+static void SnesRunCycle(Snes *snes) {
+  snes->apuCatchupCycles += kApuCyclesPerMaster * 2.0;
+  input_cycle(snes->input1);
+  input_cycle(snes->input2);
+  if (snes->hPos < 536 || snes->hPos >= 576) {
+    if (!dma_cycle(snes->dma))
+      SnesRunCpu(snes);
+  }
+  SnesRunGfxCycles(snes);
+}
+
+void snes_runFrame(Snes *snes) {
+  do {
+    SnesRunCycle(snes);
+  } while (!(snes->hPos == 0 && snes->vPos == 0));
+}
+
+void snes_softResetPreserveSram(Snes *snes) {
+  Cart *cart = snes->cart;
+  uint8_t *sram = NULL;
+  if (cart != NULL && cart->ram != NULL && cart->ramSize != 0) {
+    sram = (uint8_t *)malloc(cart->ramSize);
+    if (sram != NULL)
+      memcpy(sram, cart->ram, cart->ramSize);
+  }
+  snes_reset(snes, false);
+  if (sram != NULL) {
+    memcpy(cart->ram, sram, cart->ramSize);
+    free(sram);
+  }
+}
 
 typedef struct CartHeader {
   // normal header

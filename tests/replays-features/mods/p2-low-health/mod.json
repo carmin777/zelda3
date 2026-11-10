@@ -1,0 +1,10 @@
+{
+  "id": "p2-low-health",
+  "name": "C3c respawn test: low health at the first shared-world seed",
+  "version": "1.0.0",
+  "api": 1,
+  "enabled": true,
+  "priority": 0,
+  "permissions": ["state_write"],
+  "script": "main.lua"
+}

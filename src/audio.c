@@ -43,6 +43,24 @@ typedef struct MsuPlayer {
 
 static MsuPlayer g_msu_player;
 
+// When local split-screen is active, the mixer always renders player 1 even
+// while the simulation is running player 2. Writes from the silent instance
+// are dropped so they cannot leak into player 1's APU queue.
+static SpcPlayer *g_audio_player;
+static bool g_audio_writes_suppressed;
+
+void ZeldaSetAudioInstance(SpcPlayer *player) {
+  g_audio_player = player;
+}
+
+void ZeldaSetAudioWritesSuppressed(bool suppressed) {
+  g_audio_writes_suppressed = suppressed;
+}
+
+static SpcPlayer *ZeldaAudioPlayer(void) {
+  return g_audio_player != NULL ? g_audio_player : g_zenv.player;
+}
+
 static void MsuPlayer_Open(MsuPlayer *mp, int orig_track, bool resume_from_snapshot);
 
 static const uint8 kMsuTracksWithRepeat[48] = {
@@ -136,6 +154,8 @@ static float kVolumeTransitionTargetFloat[4];
 
 void ZeldaPlayMsuAudioTrack(uint8 music_ctrl) {
   MsuPlayer *mp = &g_msu_player;
+  if (g_audio_writes_suppressed)
+    return;
   if (!mp->enabled) {
     mp->resume_info.tag = 0;
     zelda_apu_write(APUI00, music_ctrl);
@@ -403,10 +423,14 @@ struct ApuWriteEnt {
 static struct ApuWriteEnt g_apu_write_ents[16], g_apu_write;
 static uint8 g_apu_write_ent_pos, g_apu_write_count, g_apu_total_write;
 void zelda_apu_write(uint32_t adr, uint8_t val) {
+  if (g_audio_writes_suppressed)
+    return;
   g_apu_write.ports[adr & 0x3] = val;
 }
 
 void ZeldaPushApuState() {
+  if (g_audio_writes_suppressed)
+    return;
   ZeldaApuLock();
   g_apu_write_ents[g_apu_write_ent_pos++ & 0xf] = g_apu_write;
   if (g_apu_write_count < 16)
@@ -417,11 +441,11 @@ void ZeldaPushApuState() {
 
 static void ZeldaPopApuState() {
   if (g_apu_write_count != 0)
-    memcpy(g_zenv.player->input_ports, &g_apu_write_ents[(g_apu_write_ent_pos - g_apu_write_count--) & 0xf], 4);
+    memcpy(ZeldaAudioPlayer()->input_ports, &g_apu_write_ents[(g_apu_write_ent_pos - g_apu_write_count--) & 0xf], 4);
 }
 
 void ZeldaDiscardUnusedAudioFrames() {
-  if (g_apu_write_count != 0 && memcmp(g_zenv.player->input_ports, &g_apu_write_ents[(g_apu_write_ent_pos - g_apu_write_count) & 0xf], 4) == 0) {
+  if (g_apu_write_count != 0 && memcmp(ZeldaAudioPlayer()->input_ports, &g_apu_write_ents[(g_apu_write_ent_pos - g_apu_write_count) & 0xf], 4) == 0) {
     if (g_apu_total_write >= 16) {
       g_apu_total_write = 14;
       g_apu_write_count--;
@@ -440,7 +464,7 @@ uint8_t zelda_read_apui00() {
   // from the apu and we don't want to make the core code
   // dependent on the apu timings, so relocated this value
   // to 0x648.
-  return g_ram[kRam_APUI00];
+  return apui00;
 }
 
 uint8_t zelda_apu_read(uint32_t adr) {
@@ -450,8 +474,9 @@ uint8_t zelda_apu_read(uint32_t adr) {
 void ZeldaRenderAudio(int16 *audio_buffer, int samples, int channels) {
   ZeldaApuLock();
   ZeldaPopApuState();
-  SpcPlayer_GenerateSamples(g_zenv.player);
-  dsp_getSamples(g_zenv.player->dsp, audio_buffer, samples, channels);
+  SpcPlayer *player = ZeldaAudioPlayer();
+  SpcPlayer_GenerateSamples(player);
+  dsp_getSamples(player->dsp, audio_buffer, samples, channels);
   if (g_msu_player.f && channels == 2)
     MsuPlayer_Mix(&g_msu_player, audio_buffer, samples);
   ZeldaApuUnlock();

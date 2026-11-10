@@ -1,0 +1,79 @@
+compare: off
+override 2 Sprite 4B-Knight 2 x 368 y 2848
+override 2 Sprite 4B-Knight 1 x 384 y 2816
+override 32 Sprite 4B-Knight 2 x 368 y 2848
+override 32 Sprite 4B-Knight 1 x 384 y 2816
+override 64 Sprite 4B-Knight 2 x 368 y 2848
+override 64 Sprite 4B-Knight 1 x 384 y 2816
+ev 74 SpriteSpawn 10 65 0
+ev 78 SpriteSpawn 10 65 0
+ev 82 SpriteSpawn 10 65 0
+ev 86 SpriteSpawn 10 65 0
+ev 90 SpriteSpawn 10 65 0
+ev 94 SpriteSpawn 10 65 0
+override 96 Sprite 4B-Knight 2 x 368 y 2869
+override 96 Sprite 4B-Knight 1 x 384 y 2837
+ev 98 SpriteSpawn 9 65 0
+ev 102 SpriteSpawn 10 65 0
+ev 106 SpriteSpawn 9 65 0
+ev 110 SpriteSpawn 10 65 0
+ev 114 SpriteSpawn 9 65 0
+ev 118 SpriteSpawn 10 65 0
+ev 122 SpriteSpawn 9 65 0
+ev 126 SpriteSpawn 10 65 0
+override 128 Sprite 4B-Knight 2 x 368 y 2875
+override 128 Sprite 4B-Knight 1 x 384 y 2865
+ev 130 SpriteSpawn 8 65 0
+ev 134 SpriteSpawn 9 65 0
+ev 138 SpriteSpawn 10 65 0
+ev 142 SpriteSpawn 9 65 0
+ev 146 SpriteSpawn 10 65 0
+ev 150 SpriteSpawn 9 65 0
+ev 154 SpriteSpawn 10 65 0
+ev 158 SpriteSpawn 9 65 0
+override 160 Sprite 4B-Knight 2 x 368 y 2875
+override 160 Sprite 4B-Knight 1 x 384 y 2875
+ev 162 SpriteSpawn 10 65 0
+ev 166 SpriteSpawn 10 65 0
+ev 170 SpriteSpawn 10 65 0
+ev 174 SpriteSpawn 10 65 0
+ev 178 SpriteSpawn 10 65 0
+ev 182 SpriteSpawn 10 65 0
+ev 186 SpriteSpawn 10 65 0
+ev 190 SpriteSpawn 10 65 0
+override 192 Sprite 4B-Knight 2 x 368 y 2875
+override 192 Sprite 4B-Knight 1 x 384 y 2875
+ev 194 SpriteSpawn 10 65 0
+ev 198 SpriteSpawn 10 65 0
+ev 202 SpriteSpawn 10 65 0
+ev 206 SpriteSpawn 9 65 0
+ev 210 SpriteSpawn 10 65 0
+ev 214 SpriteSpawn 9 65 0
+ev 218 SpriteSpawn 10 65 0
+ev 222 SpriteSpawn 9 65 0
+override 224 Sprite 4B-Knight 2 x 368 y 2875
+override 224 Sprite 4B-Knight 1 x 384 y 2875
+ev 226 SpriteSpawn 10 65 0
+ev 230 SpriteSpawn 9 65 0
+ev 234 SpriteSpawn 10 65 0
+ev 238 SpriteSpawn 9 65 0
+ev 242 SpriteSpawn 10 65 0
+ev 246 SpriteSpawn 9 65 0
+ev 250 SpriteSpawn 10 65 0
+ev 254 SpriteSpawn 9 65 0
+override 256 Sprite 4B-Knight 2 x 368 y 2875
+override 256 Sprite 4B-Knight 1 x 384 y 2875
+ev 258 SpriteSpawn 10 65 0
+ev 262 SpriteSpawn 9 65 0
+ev 266 SpriteSpawn 10 65 0
+ev 270 SpriteSpawn 9 65 0
+ev 274 SpriteSpawn 10 65 0
+ev 278 SpriteSpawn 10 65 0
+ev 282 SpriteSpawn 10 65 0
+ev 286 SpriteSpawn 10 65 0
+override 288 Sprite 4B-Knight 2 x 368 y 2875
+override 288 Sprite 4B-Knight 1 x 384 y 2875
+ev 290 SpriteSpawn 10 65 0
+ev 294 SpriteSpawn 10 65 0
+ev 298 SpriteSpawn 10 65 0
+final 300 4079c8e1

@@ -1,0 +1,7 @@
+{
+  "id": "vida-cheia-carregar",
+  "name": "Vida cheia ao carregar (PowerPanda)",
+  "version": "1.0.0",
+  "api": 1,
+  "script": "main.lua"
+}

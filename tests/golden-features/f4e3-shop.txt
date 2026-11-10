@@ -1,0 +1,15 @@
+compare: off
+ev 9 ModuleChange 6 15 0
+ev 10 DungeonEnter 255 70 0
+ev 10 RoomEnter 287 0 0
+ev 10 SpriteSpawn 0 187 0
+ev 10 ModuleChange 7 6 0
+ev 11 SpriteSpawn 12 187 0
+ev 11 SpriteSpawn 11 187 0
+ev 11 SpriteSpawn 10 187 0
+ev 53 ModuleChange 14 7 0
+ev 54 DialogueOpen 357 0 0
+ev 102 DialogueClose 357 0 0
+ev 102 ModuleChange 7 14 0
+ev 150 ItemReceive 128 0 0
+final 250 eb35f68b

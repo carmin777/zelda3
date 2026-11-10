@@ -41,6 +41,9 @@ void Module_Unknown0();
 void Module_Unknown1();
 void Module_MainRouting();
 void NMI_PrepareSprites();
+// Recompute the Link CHR DMA source addresses from the Link variables that
+// are live in g_ram. SharedWorld calls this while player 2 is swapped in.
+void NMI_UpdateLinkDmaSources(void);
 void Sound_LoadIntroSongBank();
 void LoadOverworldSongs();
 void LoadDungeonSongs();

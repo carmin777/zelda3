@@ -11,6 +11,11 @@
 #include "dungeon.h"
 #include "sprite_main.h"
 #include "assets.h"
+#include "mod/game_over_text.h"
+#include "mod/hooks.h"
+#include "mod/items.h"
+#include "mod/seed_import.h"
+#include "mod/frame_desc.h"
 
 static const uint8 kAncilla_Pflags[68] = {
   0,    8,  0xc, 0x10, 0x10,    4, 0x10, 0x18,    8,    8,    8,    0, 0x14, 0, 0x10, 0x28,
@@ -25,11 +30,6 @@ static const uint8 kTagalongLayerBits[4] = {0x20, 0x10, 0x30, 0x20};
 static const uint8 kBombos_Sfx[8] = {0x80, 0x80, 0x80, 0, 0, 0x40, 0x40, 0x40};
 const uint8 kBomb_Tab0[11] = {0xA0, 6, 4, 4, 4, 4, 4, 6, 6, 6, 6};
 
-#define swordbeam_temp_x (*(uint16*)(g_ram+0x1580E))
-#define swordbeam_temp_y (*(uint16*)(g_ram+0x15810))
-#define swordbeam_arr ((uint8*)(g_ram+0x15800))
-#define swordbeam_var1 (*(uint8*)(g_ram+0x15804))
-#define swordbeam_var2 (*(uint8*)(g_ram+0x15808))
 static const int8 kAncilla_TileColl_Attrs[256] = {
   0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0,
   1, 1, 1, 1, 0, 0, 0, 0, 2, 2, 2, 2, 0, 3, 3, 3,
@@ -74,20 +74,9 @@ static const uint8 kMagicPowder_Tab0[40] = {
   3,  4,  5, 6, 16, 17, 18, 0, 1, 2,  3,  4,  5, 6, 7, 8,
   9,  0,  1, 2,  3,  4,  5, 6,
 };
-#define ether_arr1 ((uint8*)(g_ram+0x15800))
-#define ether_var2 (*(uint8*)(g_ram+0x15808))
-#define ether_y2 (*(uint16*)(g_ram+0x1580A))
-#define ether_y_adjusted (*(uint16*)(g_ram+0x1580C))
-#define ether_x2 (*(uint16*)(g_ram+0x1580E))
-#define ether_y3 (*(uint16*)(g_ram+0x15810))
-#define ether_var1 (*(uint8*)(g_ram+0x15812))
-#define ether_y (*(uint16*)(g_ram+0x15813))
-#define ether_x (*(uint16*)(g_ram+0x15815))
 static const uint8 kEther_BlitzOrb_Char[8] = {0x48, 0x48, 0x4a, 0x4a, 0x4c, 0x4c, 0x4e, 0x4e};
 static const uint8 kEther_BlitzOrb_Flags[8] = {0x3c, 0x7c, 0x3c, 0x7c, 0x3c, 0x7c, 0x3c, 0x7c};
 static const uint8 kEther_BlitzSegment_Char[4] = {0x40, 0x42, 0x44, 0x46};
-#define bombos_arr1 ((uint8*)(g_ram+0x15800))
-#define bombos_arr2 ((uint8*)(g_ram+0x15810))
 static const uint8 kBombosBlasts_Tab[72] = {
   0xb6, 0x5d, 0xa1, 0x30, 0x69, 0xb5, 0xa3, 0x24, 0x96, 0xac, 0x73, 0x5f, 0x92, 0x48, 0x52, 0x81,
   0x39, 0x95, 0x7f, 0x20, 0x88, 0x5d, 0x34, 0x98, 0xbc, 0xd2, 0x51, 0x77, 0xa2, 0x47, 0x94, 0xb2,
@@ -511,6 +500,9 @@ void Ancilla_CheckDamageToSprite_aggressive(int k, uint8 type) {  // 86ecbd
       sprite_delay_aux4[k] = 32;
     dmg = 9;
   }
+  // AddSwordBeam() creates type 0x0c; 0x0b is the ice rod shot.
+  if (type == 0x0c)
+    dmg = (uint8)MOD_FILTER(kModFilter_SwordBeamDamage, dmg, k);
   Ancilla_CheckDamageToSprite_preset(k, dmg);
 }
 
@@ -1640,8 +1632,10 @@ void Bomb_CheckSpriteAndPlayerDamage(int k) {  // 889815
   link_incapacitated_timer = kBomb_Dmg_Delay[j];
   link_auxiliary_state = 1;
   countdown_for_blink = 58;
-  if (!(dung_savegame_state_bits & 0x8000))
+  if (!(dung_savegame_state_bits & 0x8000)) {
+    g_mod_link_damage_source = kModLinkDamage_Ancilla;
     link_give_damage = kBomb_Dmg_ToLink[link_armor];
+  }
 
 }
 
@@ -1829,7 +1823,7 @@ void Bomb_Draw(int k) {  // 889e9e
   Ancilla_PrepAdjustedOamCoord(k, &pt);
 
   int z = (int8)ancilla_z[k];
-  if (z != 0 && z != -1 && ancilla_K[k] != 3 && ancilla_objprio[k])
+  if (z != -1 && ancilla_K[k] != 3 && ancilla_objprio[k])
     oam_priority_value = 0x3000;
   pt.y -= z;
   int j = kBomb_Draw_Tab0[ancilla_item_to_link[k]] * 6;
@@ -3464,7 +3458,10 @@ endif_6:
   }
   int msg;
   msg = -1;
-  if (ancilla_item_to_link[k] == 0x38 || ancilla_item_to_link[k] == 0x39) {
+  if (ModItems_IsCustomId((uint8)ancilla_item_to_link[k])) {
+    if (ancilla_step[k] != 2)
+      msg = ModItems_ReceiptMessage((uint8)ancilla_item_to_link[k]);
+  } else if (ancilla_item_to_link[k] == 0x38 || ancilla_item_to_link[k] == 0x39) {
     if ((link_which_pendants & 7) == 7)
       msg = kReceiveItemMsgs2[ancilla_item_to_link[k] - 0x38];
     else
@@ -3535,13 +3532,14 @@ skipit:;
 OamEnt *Ancilla_ReceiveItem_Draw(int k, int x, int y) {  // 88c690
   OamEnt *oam = GetOamCurPtr();
   int j = ancilla_item_to_link[k];
+  bool custom_item = ModItems_IsCustomId((uint8)j);
   oam->charnum = 0x24;
-  uint8 a = kWishPond2_OamFlags[j];
+  uint8 a = custom_item ? 1 : kWishPond2_OamFlags[j];
   if (sign8(a))
     a = ancilla_arr4[k];
-  Ancilla_SetOam(oam, x, y, 0x24, a * 2 | 0x30, kReceiveItem_Tab1[j]);
+  Ancilla_SetOam(oam, x, y, 0x24, a * 2 | 0x30, custom_item ? 2 : kReceiveItem_Tab1[j]);
   oam++;
-  if (kReceiveItem_Tab1[j] == 0) {
+  if (!custom_item && kReceiveItem_Tab1[j] == 0) {
     Ancilla_SetOam(oam, x, y + 8, 0x34, a * 2 | 0x30, 0);
     oam++;
   }
@@ -5027,7 +5025,7 @@ void AncillaDraw_SomariaBlock(int k) {  // 88e61b
   Ancilla_PrepAdjustedOamCoord(k, &pt);
   OamEnt *oam = GetOamCurPtr(), *oam_org = oam;
   int z = (int8)ancilla_z[k];
-  if (z != 0 && z != -1 && ancilla_K[k] != 3 && ancilla_objprio[k])
+  if (z != -1 && ancilla_K[k] != 3 && ancilla_objprio[k])
     oam_priority_value = 0x3000;
   pt.y -= z;
   int j = ancilla_arr1[k] * 4;
@@ -5525,14 +5523,14 @@ void RevivalFairy_MonitorHP() {  // 88f430
 }
 
 void GameOverText_Draw() {  // 88f5c4
-  static const uint8 kGameOverText_Chars[16] = {0x40, 0x50, 0x41, 0x51, 0x42, 0x52, 0x43, 0x53, 0x44, 0x54, 0x45, 0x55, 0x43, 0x53, 0x46, 0x56};
   oam_cur_ptr = 0x800;
   oam_ext_cur_ptr = 0xa20;
   OamEnt *oam = GetOamCurPtr();
   int k = flag_for_boomerang_in_place;
   do {
-    Ancilla_SetOam(oam + 0, Ancilla_GetX(k), 0x57, kGameOverText_Chars[k * 2 + 0], 0x3c, 0);
-    Ancilla_SetOam(oam + 1, Ancilla_GetX(k), 0x5f, kGameOverText_Chars[k * 2 + 1], 0x3c, 0);
+    const uint8 *tile = &kGameOverTextTiles[k * 4];
+    Ancilla_SetOam(oam + 0, Ancilla_GetX(k), 0x57, tile[0], tile[1], 0);
+    Ancilla_SetOam(oam + 1, Ancilla_GetX(k), 0x5f, tile[2], tile[3], 0);
   } while (oam += 2, --k >= 0);
 }
 
@@ -5704,14 +5702,17 @@ AncillaRadialProjection Ancilla_GetRadialProjection(uint8 a, uint8 r8) {  // 88f
 }
 
 int Ancilla_AllocateOamFromRegion_A_or_D_or_F(int k, uint8 size) {  // 88fb2b
+  int oam;
   if (sort_sprites_setting) {
     if (ancilla_floor[k])
-      return Oam_AllocateFromRegionF(size);
+      oam = Oam_AllocateFromRegionF(size);
     else
-      return Oam_AllocateFromRegionD(size);
+      oam = Oam_AllocateFromRegionD(size);
   } else {
-    return Oam_AllocateFromRegionA(size);
+    oam = Oam_AllocateFromRegionA(size);
   }
+  FrameDesc_NoteAncillaOam(k, oam_cur_ptr);
+  return oam;
 }
 
 void Ancilla_AddHitStars(uint8 a, uint8 y) {  // 898024
@@ -5983,6 +5984,15 @@ int AncillaAdd_FallingPrize(uint8 a, uint8 item_idx, uint8 yv) {  // 898bc1
   if (k < 0)
     return k;
   uint8 item_type = kFallingItem_Type[item_idx];
+  if (item_idx == 0)
+    item_type = ModSeedImport_FixedItem("fixed:SpriteItemValues:EtherItem", item_type);
+  else if (item_idx == 5)
+    item_type = ModSeedImport_FixedItem("fixed:SpriteItemValues:BombosItem", item_type);
+  uint8 prize_item = ModSeedImport_TakePrizeItem();
+  if (prize_item != 0)
+    item_type = prize_item;
+  if (item_type > 0x4B)
+    item_type = ModSeedImport_MapItem(item_type);
   ancilla_item_to_link[k] = item_type;
   if (item_type == 0x10 || item_type == 0xf)
     DecodeAnimatedSpriteTile_variable(kReceiveItemGfx[item_type]);
@@ -6000,7 +6010,8 @@ int AncillaAdd_FallingPrize(uint8 a, uint8 item_idx, uint8 yv) {  // 898bc1
 
   int x, y;
   if (item_idx != 0 && item_idx != 5) {
-    if (BYTE(cur_palace_index_x2) == 20) {
+    if (BYTE(cur_palace_index_x2) == 20 &&
+        MOD_DECIDE(kModDecide_PendantDropSpecialCase, true, item_idx)) {
       x = (link_x_coord & 0xff00) | 0x100;
       y = (link_y_coord & 0xff00) | 0x100;
     } else {
@@ -6975,7 +6986,7 @@ uint8 Ancilla_CalculateSfxPan(int k) {  // 8dbb5e
 int Ancilla_AllocInit(uint8 type, uint8 limit) {  // 8ff577
   // snes bug: R14 is used in tile detection already
   // unless this is here it the memcmp will fail when entering/leaving a water through steps quickly
-  if (g_ram[kRam_BugsFixed] >= kBugFix_PolyRenderer)
+  if (bugs_fixed >= kBugFix_PolyRenderer)
     BYTE(R14) = limit + 1;
 
   int n = 0;
@@ -7007,6 +7018,8 @@ int Ancilla_AllocInit(uint8 type, uint8 limit) {  // 8ff577
 }
 
 void AddSwordBeam(uint8 y) {  // 8ff67b
+  if (!MOD_DECIDE(kModDecide_SwordBeamSpawn, true, link_direction_facing))
+    return;
   static const int8 kSwordBeam_X[4] = {-8, -10, -22, 4};
   static const int8 kSwordBeam_Y[4] = {-24, 8, -6, -6};
   static const int8 kSwordBeam_S[4] = {-8, -8, -8, 8};

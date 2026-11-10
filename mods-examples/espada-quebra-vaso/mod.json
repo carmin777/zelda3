@@ -1,0 +1,10 @@
+{
+  "id": "espada-quebra-vaso",
+  "name": "Espada quebra vaso (#262)",
+  "version": "1.0.0",
+  "api": 1,
+  "features": {
+    "BreakPotsWithSword": true
+  },
+  "script": "main.lua"
+}

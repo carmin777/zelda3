@@ -1,0 +1,10 @@
+{
+  "id": "p2-two-items",
+  "name": "P2 two items setup",
+  "version": "1.0.0",
+  "api": 1,
+  "enabled": true,
+  "priority": 0,
+  "permissions": ["state_write"],
+  "script": "main.lua"
+}

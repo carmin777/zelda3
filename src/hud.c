@@ -1,13 +1,63 @@
 #include "hud.h"
 #include "zelda_rtl.h"
+#include "zelda_cpu_infra.h"
 
 #include "variables.h"
 #include "messaging.h"
+#include "load_gfx.h"
+#include "mod/hooks.h"
+#include "mod/items.h"
+#include "mod/seed_oracle.h"
 
-enum {
-  kNewStyleInventory = 0,
-  kHudItemCount = kNewStyleInventory ? 24 : 20,
-};
+static bool Hud_IsNewStyleInventory(void) {
+  return (enhanced_features0 & kFeatures0_NewStyleInventory) != 0;
+}
+
+static bool Hud_IsReduxHud(void) {
+  return (enhanced_features0 & kFeatures0_ReduxHud) != 0;
+}
+
+static bool Hud_IsHorizontalMagicBar(void) {
+  return (enhanced_features0 &
+          (kFeatures0_HorizontalMagicBar | kFeatures0_ReduxHud)) != 0;
+}
+
+static bool Hud_IsMenuTimer(void) {
+  return (enhanced_features0 & kFeatures0_MenuTimer) != 0;
+}
+
+static int Hud_ItemCount(void) {
+  return Hud_IsNewStyleInventory() ? 24 : 20;
+}
+
+static bool Hud_IsCustomHudSlot(int item) {
+  return ModItems_IsCustomHudSlot(item);
+}
+
+static int Hud_NavCount(void) {
+  return Hud_ItemCount() + ModItems_Count();
+}
+
+static int Hud_ItemAtNavPos(int pos) {
+  int vanilla = Hud_ItemCount();
+  if (pos < 0)
+    return 0;
+  if (pos < vanilla)
+    return hud_inventory_order[0] != 0 ? hud_inventory_order[pos] : pos + 1;
+  return kModItemHudBase + pos - vanilla;
+}
+
+static int Hud_NavPosition(int item) {
+  if (Hud_IsCustomHudSlot(item))
+    return Hud_ItemCount() + item - kModItemHudBase;
+  if (hud_inventory_order[0] != 0) {
+    for (int i = 0; i < Hud_ItemCount(); i++) {
+      if (hud_inventory_order[i] == item)
+        return i;
+    }
+  }
+  return item - 1;
+}
 
 typedef struct ItemBoxGfx {
   uint16 v[4];
@@ -22,6 +72,7 @@ static void Hud_ReorderItem(int direction);
 static void Hud_Update_Magic();
 static void Hud_Update_Inventory();
 static void Hud_Update_Hearts();
+static void Hud_DrawMenuTimer(uint16 *dst);
 
 const uint8 kMaxBombsForLevel[] = { 10, 15, 20, 25, 30, 35, 40, 50 };
 const uint8 kMaxArrowsForLevel[] = { 30, 35, 40, 45, 50, 55, 60, 70 };
@@ -30,10 +81,10 @@ static const uint8 kMaxHealthForLevel[] = { 9, 9, 9, 9, 9, 9, 9, 9, 17, 17, 17, 
 #define HUDXY(x, y) ((x) + (y) * 32)
 
 static const uint16 kHudItemInVramPtr_New[24] = {
-  HUDXY(2,  7), HUDXY(5,  7), HUDXY(8,  7), HUDXY(11,  7), HUDXY(14,  7), HUDXY(17, 7),
-  HUDXY(2, 10), HUDXY(5, 10), HUDXY(8, 10), HUDXY(11, 10), HUDXY(14, 10), HUDXY(17, 10),
-  HUDXY(2, 13), HUDXY(5, 13), HUDXY(8, 13), HUDXY(11, 13), HUDXY(14, 13), HUDXY(17, 13),
-  HUDXY(2, 16), HUDXY(5, 16), HUDXY(8, 16), HUDXY(11, 16), HUDXY(14, 16), HUDXY(17, 16),
+  HUDXY(3, 11), HUDXY(6, 11), HUDXY(9, 11), HUDXY(12, 11), HUDXY(15, 11), HUDXY(18, 11),
+  HUDXY(3, 14), HUDXY(6, 14), HUDXY(9, 14), HUDXY(12, 14), HUDXY(15, 14), HUDXY(18, 14),
+  HUDXY(3, 17), HUDXY(6, 17), HUDXY(9, 17), HUDXY(12, 17), HUDXY(15, 17), HUDXY(18, 17),
+  HUDXY(3, 20), HUDXY(6, 20), HUDXY(9, 20), HUDXY(12, 20), HUDXY(15, 20), HUDXY(18, 20),
 };
 
 static const uint16 kHudItemInVramPtr_Old[20] = {
@@ -43,8 +94,55 @@ static const uint16 kHudItemInVramPtr_Old[20] = {
   HUDXY(4, 16), HUDXY(7, 16), HUDXY(10, 16), HUDXY(13, 16), HUDXY(16, 16),
 };
 
+// Background of the Redux-style in-game HUD, described in
+// docs/engine/REDUX-MAPA.md: hearts at the top-left, the horizontal magic
+// bar at x=3..12 on rows 2..3, the counters shifted right and the item box
+// at x=27..30 on rows 0..3. Everything else stays empty. These are the same
+// tile ids the vanilla HUD already uses.
+static void Hud_BuildReduxBackground(uint16 *dst) {
+  for (int y = 0; y < 5; y++)
+    for (int x = 0; x < 32; x++)
+      dst[HUDXY(x, y)] = 0x207F;
 
-#define kHudItemInVramPtr (kNewStyleInventory ? kHudItemInVramPtr_New : kHudItemInVramPtr_Old)
+  // Horizontal magic bar: two caps and eight empty segments.
+  dst[HUDXY(3, 2)] = 0x2850;
+  dst[HUDXY(12, 2)] = 0x6850;
+  dst[HUDXY(3, 3)] = 0xA850;
+  dst[HUDXY(12, 3)] = 0xE850;
+  for (int x = 4; x <= 11; x++) {
+    dst[HUDXY(x, 2)] = 0x3C4F;
+    dst[HUDXY(x, 3)] = 0xBC4F;
+  }
+
+  // Item box frame.
+  dst[HUDXY(27, 0)] = 0x685C;
+  dst[HUDXY(30, 0)] = 0x285C;
+  for (int x = 28; x <= 29; x++)
+    dst[HUDXY(x, 0)] = 0x285B;
+  for (int y = 1; y <= 2; y++) {
+    dst[HUDXY(27, y)] = 0x685D;
+    dst[HUDXY(30, y)] = 0x285D;
+  }
+  dst[HUDXY(27, 3)] = 0xE85C;
+  dst[HUDXY(30, 3)] = 0xA85C;
+  for (int x = 28; x <= 29; x++)
+    dst[HUDXY(x, 3)] = 0xA85B;
+
+  // Fixed counter icons. Hud_Update_Inventory writes the digits and the
+  // per-frame background over these cells.
+  dst[HUDXY(15, 0)] = 0x3CA8;
+  dst[HUDXY(18, 0)] = 0x2C88;
+  dst[HUDXY(19, 0)] = 0x2C89;
+  dst[HUDXY(21, 0)] = 0x20A7;
+  dst[HUDXY(22, 0)] = 0x20A9;
+  dst[HUDXY(24, 0)] = 0x2871;
+}
+
+static int Hud_HeartsStart(void) {
+  return Hud_IsReduxHud() ? HUDXY(3, 0) : HUDXY(20, 1);
+}
+
+#define kHudItemInVramPtr (Hud_IsNewStyleInventory() ? kHudItemInVramPtr_New : kHudItemInVramPtr_Old)
 
 static const ItemBoxGfx kHudItemBottles[9] = {
   {{0x20f5, 0x20f5, 0x20f5, 0x20f5}},
@@ -181,6 +279,86 @@ static const ItemBoxGfx kHudItemArmor[5] = {
   {{0x2468, 0x6468, 0x2478, 0x6478}},
 };
 
+// Tilemap tables that mods may replace by name. The sizes and ROM
+// addresses are registered in src/mod/game_tables.def; they are non-const
+// so a table override can update them in place.
+uint16 kHudAbilityText[80] = {
+  0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2d5b, 0x2d58, 0x2d55, 0x2d63, 0x2d27,
+  0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2d61, 0x2d54, 0x2d50, 0x2d53,
+  0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2d63, 0x2d50, 0x2d5b, 0x2d5a,
+  0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f,
+  0x2cf5, 0x2cf5, 0x2c2e, 0x2cf5, 0x2cf5, 0x2d5f, 0x2d64, 0x2d5b, 0x2d5b, 0x2cf5,
+  0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2d61, 0x2d64, 0x2d5d, 0x2cf5,
+  0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2d62, 0x2d66, 0x2d58, 0x2d5c,
+  0x2cf5, 0x2cf5, 0x2cf5, 0x207f, 0x207f, 0x2c01, 0x2c18, 0x2c28, 0x207f, 0x207f,
+};
+
+uint16 kHudGlovesText[20] = {
+  0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2d5b, 0x2d58, 0x2d55, 0x2d63, 0x2d28,
+  0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2d5b, 0x2d58, 0x2d55, 0x2d63, 0x2d29,
+};
+
+uint16 kHudEquipmentDungeonItemText[16] = {
+  0x2479, 0x247a, 0x247b, 0x247c, 0x248c, 0x24f5, 0x24f5, 0x24f5,
+  0x2469, 0x246a, 0x246b, 0x246c, 0x246d, 0x246e, 0x246f, 0x24f5,
+};
+
+uint16 kHudBottlesItemText[128] = {
+  0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x255c, 0x2564, 0x2562, 0x2557, 0x2561, 0x255e, 0x255e, 0x255c,
+  0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2551, 0x255e, 0x2563, 0x2563, 0x255b, 0x2554, 0x24f5, 0x24f5,
+  0x255b, 0x2558, 0x2555, 0x2554, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x255c, 0x2554, 0x2553, 0x2558, 0x2552, 0x2558, 0x255d, 0x2554,
+  0x255c, 0x2550, 0x2556, 0x2558, 0x2552, 0x24f5, 0x24f5, 0x24f5, 0x255c, 0x2554, 0x2553, 0x2558, 0x2552, 0x2558, 0x255d, 0x2554,
+  0x2552, 0x2564, 0x2561, 0x2554, 0x256a, 0x2550, 0x255b, 0x255b, 0x255c, 0x2554, 0x2553, 0x2558, 0x2552, 0x2558, 0x255d, 0x2554,
+  0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2555, 0x2550, 0x2554, 0x2561, 0x2558, 0x2554, 0x24f5, 0x24f5,
+  0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2551, 0x2554, 0x2554, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5,
+  0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2556, 0x255e, 0x255e, 0x2553, 0x24f5, 0x2551, 0x2554, 0x2554,
+};
+
+uint16 kHudMushroomItemText[16] = {
+  0x255c, 0x2550, 0x2556, 0x2558, 0x2552, 0x24f5, 0x24f5, 0x24f5,
+  0x24f5, 0x255f, 0x255e, 0x2566, 0x2553, 0x2554, 0x2561, 0x24f5,
+};
+
+uint16 kHudFluteItemText[32] = {
+  0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2555, 0x255b, 0x2564, 0x2563, 0x2554, 0x24f5, 0x24f5, 0x24f5,
+  0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2555, 0x255b, 0x2564, 0x2563, 0x2554, 0x24f5, 0x24f5, 0x24f5
+};
+
+uint16 kHudMirrorItemText[16] = {
+  0x255c, 0x2550, 0x2556, 0x2558, 0x2552, 0x24f5, 0x24f5, 0x24f5,
+  0x24f5, 0x24f5, 0x255c, 0x2558, 0x2561, 0x2561, 0x255e, 0x2561
+};
+
+uint16 kHudBowItemText[48] = {
+  0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x256b, 0x256c, 0x256e, 0x256f, 0x257c, 0x257d, 0x257e, 0x257f,
+  0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x256b, 0x256c, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5,
+  0x256b, 0x256c, 0x24f5, 0x256e, 0x256f, 0x24f5, 0x24f5, 0x24f5, 0x2578, 0x2579, 0x257a, 0x257b, 0x257c, 0x257d, 0x257e, 0x257f,
+};
+
+uint16 kHudItemText[320] = {
+  0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x256b, 0x256c, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5,
+  0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2570, 0x2571, 0x2572, 0x2573, 0x2574, 0x2575, 0x2576, 0x2577,
+  0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2557, 0x255e, 0x255e, 0x255a, 0x2562, 0x2557, 0x255e, 0x2563,
+  0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2551, 0x255e, 0x255c, 0x2551, 0x24f5, 0x24f5, 0x24f5, 0x24f5,
+  0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x255c, 0x2564, 0x2562, 0x2557, 0x2561, 0x255e, 0x255e, 0x255c,
+  
+  0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2555, 0x2558, 0x2561, 0x2554, 0x2561, 0x255e, 0x2553, 0x24f5,
+  0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2558, 0x2552, 0x2554, 0x2561, 0x255e, 0x2553, 0x24f5, 0x24f5,
+  0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2551, 0x255e, 0x255c, 0x2551, 0x255e, 0x2562, 0x24f5, 0x24f5,
+  0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2554, 0x2563, 0x2557, 0x2554, 0x2561, 0x24f5, 0x24f5, 0x24f5,
+  0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2560, 0x2564, 0x2550, 0x255a, 0x2554, 0x24f5, 0x24f5, 0x24f5,
+  0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x255b, 0x2550, 0x255c, 0x255f, 0x24f5, 0x24f5, 0x24f5, 0x24f5,
+  0x255c, 0x2550, 0x2556, 0x2558, 0x2552, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2557, 0x2550, 0x255c, 0x255c, 0x2554, 0x2561,
+  0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2562, 0x2557, 0x255e, 0x2565, 0x2554, 0x255b, 0x24f5, 0x24f5,
+  0x2400, 0x2401, 0x2402, 0x2403, 0x2404, 0x2405, 0x2406, 0x2407, 0x2408, 0x2409, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5,
+  0x2551, 0x255e, 0x255e, 0x255a, 0x24f5, 0x255e, 0x2555, 0x24f5, 0x255c, 0x2564, 0x2553, 0x255e, 0x2561, 0x2550, 0x24f5, 0x24f5,
+  0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x255c, 0x2564, 0x2562, 0x2557, 0x2561, 0x255e, 0x255e, 0x255c,
+  0x2552, 0x2550, 0x255d, 0x2554, 0x24f5, 0x255e, 0x2555, 0x24f5, 0x24f5, 0x2562, 0x255e, 0x255c, 0x2550, 0x2561, 0x2558, 0x2550,
+  0x2552, 0x2550, 0x255d, 0x2554, 0x24f5, 0x255e, 0x2555, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2551, 0x2568, 0x2561, 0x255d, 0x2550,
+  0x255c, 0x2550, 0x2556, 0x2558, 0x2552, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2552, 0x2550, 0x255f, 0x2554, 0x24f5,
+  0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5,
+};
+
 
 static const ItemBoxGfx * const kHudItemBoxGfxPtrs[] = {
   kHudItemBow,
@@ -265,14 +443,57 @@ uint8 CheckPalaceItemPosession() {
   }
 }
 
+static bool Hud_CustomCellUsable(int item) {
+  // Bottle slots share icon tile sets between bottle types, and the mirror
+  // icon shares its tiles with the dungeon map. Do not borrow those.
+  if (item <= 0 || item >= kHudItem_Bottle1)
+    return false;
+  if (item == 20)
+    return false;
+  if (item == kHudItem_BottleOld && !Hud_IsNewStyleInventory())
+    return false;
+  return true;
+}
+
+static int Hud_CustomFreeCell(int hud_slot) {
+  int cells = Hud_ItemCount();
+  bool used[24] = { false };
+  for (int i = 0; i < cells; i++) {
+    int item = hud_inventory_order[0] != 0 ? hud_inventory_order[i] : i + 1;
+    if (item > 0 && !Hud_IsCustomHudSlot(item) &&
+        (Hud_DoWeHaveThisItem((uint8)item) || !Hud_CustomCellUsable(item)))
+      used[i] = true;
+  }
+  for (int i = 0; i < ModItems_Count(); i++) {
+    int slot = kModItemHudBase + i;
+    if (!ModItems_IsCustomHudSlot(slot) ||
+        !ModItems_IsOwned((uint8)ModItems_IdFromHudSlot(slot)))
+      continue;
+    int cell = -1;
+    for (int c = 0; c < cells; c++) {
+      if (!used[c]) {
+        cell = c;
+        break;
+      }
+    }
+    if (cell >= 0)
+      used[cell] = true;
+    if (slot == hud_slot)
+      return cell;
+  }
+  return -1;
+}
+
 // Returns the zero based index of the currently selected hud item,
 // or -1 if the item is item 0.
 static int Hud_GetItemPosition(int item) {
   if (item <= 0)
     return -1;
+  if (Hud_IsCustomHudSlot(item))
+    return Hud_CustomFreeCell(item);
   if (hud_inventory_order[0] != 0) {
     int i = 0;
-    for (; i < kHudItemCount - 1 && hud_inventory_order[i] != item; i++) {}
+    for (; i < Hud_ItemCount() - 1 && hud_inventory_order[i] != item; i++) {}
     return i;
   } else {
     return item ? item - 1 : item;
@@ -280,21 +501,24 @@ static int Hud_GetItemPosition(int item) {
 }
 
 static void Hud_GotoPrevItem(uint8 *item, uint8 first_item_index) {
+  int count = Hud_NavCount();
   if (hud_inventory_order[0] != 0) {
-    int pos = Hud_GetItemPosition(*item);
+    int pos = Hud_NavPosition(*item);
     *item = (pos == 0 && !first_item_index) ? 0 :
-        hud_inventory_order[(pos <= 0 ? kHudItemCount : pos) - 1];
+        Hud_ItemAtNavPos((pos <= 0 ? count : pos) - 1);
   } else {
-    *item = (*item > first_item_index) ? *item - 1 : kHudItemCount;
+    *item = (*item > first_item_index) ? *item - 1 : Hud_ItemAtNavPos(count - 1);
   }
 }
 
 static void Hud_GotoNextItem(uint8 *item, uint8 first_item_index) {
+  int count = Hud_NavCount();
   if (hud_inventory_order[0] != 0) {
-    int i = Hud_GetItemPosition(*item);
-    *item = hud_inventory_order[((uint)i >= kHudItemCount - 1) ? 0 : i + 1];
+    int pos = Hud_NavPosition(*item);
+    *item = Hud_ItemAtNavPos((pos >= count - 1) ? 0 : pos + 1);
   } else {
-    *item = (*item < kHudItemCount) ? *item + 1 : first_item_index;
+    int pos = Hud_NavPosition(*item);
+    *item = (pos + 1 < count) ? Hud_ItemAtNavPos(pos + 1) : first_item_index;
   }
 }
 
@@ -337,6 +561,15 @@ void Hud_RemoveSuperBombIndicator() {  // 8afd90
   hud_tile_indices_buffer[0x134 / 2] = 0x7f;
 }
 
+void Hud_LoadOverworldBlankTiles() {
+  // JP $8D:FA9F uploads the HUD tilemap from $A1:86B0; these four
+  // cells keep the JP table value (0x207F) at the overworld load.
+  hud_tile_indices_buffer[0xf2 / 2] = SeedOracle_JpHudTile(0xf2 / 2);
+  hud_tile_indices_buffer[0x132 / 2] = SeedOracle_JpHudTile(0x132 / 2);
+  hud_tile_indices_buffer[0xf4 / 2] = SeedOracle_JpHudTile(0xf4 / 2);
+  hud_tile_indices_buffer[0x134 / 2] = SeedOracle_JpHudTile(0x134 / 2);
+}
+
 void Hud_SuperBombIndicator() {  // 8afda8
   if (!super_bomb_indicator_unk1) {
     if (sign8(super_bomb_indicator_unk2))
@@ -366,6 +599,24 @@ remove:
 
 static int MaxRupees() {
   return enhanced_features0 & kFeatures0_CarryMoreRupees ? 9999 : 999;
+}
+
+void Hud_TickMenuTimer() {
+  if (!Hud_IsMenuTimer())
+    return;
+  // The Redux timer advances one minute every 3600 frames and wraps at
+  // 100 hours. $7EE000 is the frame countdown; $7EF339 is the saved value.
+  if (word_7EE000 == 0) {
+    word_7EE000 = 0x0E10;
+    return;
+  }
+  if (--word_7EE000 != 0)
+    return;
+  uint16 minutes = WORD(g_ram[0xF339]) + 1;
+  if (minutes >= 6000)
+    minutes = 0;
+  WORD(g_ram[0xF339]) = minutes;
+  word_7EE000 = 0x0E10;
 }
 
 void Hud_RefillLogic() {  // 8ddb92
@@ -406,13 +657,13 @@ void Hud_RefillLogic() {  // 8ddb92
 
   if (link_bomb_filler) {
     link_bomb_filler--;
-    if (link_item_bombs != kMaxBombsForLevel[link_bomb_upgrades])
+    if (link_item_bombs != ModHooks_MaxBombsForLevel(link_bomb_upgrades))
       link_item_bombs++;
   }
 
   if (link_arrow_filler) {
     link_arrow_filler--;
-    if (link_num_arrows != kMaxArrowsForLevel[link_arrow_upgrades])
+    if (link_num_arrows != ModHooks_MaxArrowsForLevel(link_arrow_upgrades))
       link_num_arrows++;
     if (link_item_bow && (link_item_bow & 1) == 1) {
       link_item_bow++;
@@ -484,7 +735,7 @@ void Hud_Module_Run() {  // 8ddd36
 }
 
 void Hud_ClearTileMap() {  // 8ddd5a
-  uint16 *target = (uint16 *)&g_ram[0x1000];
+  uint16 *target = (uint16 *)&uvram_screen;
   for (int i = 0; i < 1024; i++)
     target[i] = 0x207f;
   sound_effect_2 = 17;
@@ -497,10 +748,18 @@ bool Hud_HaveAnyItems() { // new
   for (int i = 0; i < 20; i++)
     if ((&link_item_bow)[i])
       return true;
+  for (int i = 0; i < ModItems_Count(); i++) {
+    int slot = kModItemHudBase + i;
+    if (ModItems_IsCustomHudSlot(slot) &&
+        ModItems_IsOwned((uint8)ModItems_IdFromHudSlot(slot)))
+      return true;
+  }
   return false;
 }
 
 void Hud_Init() {  // 8dddab
+  if (Hud_IsNewStyleInventory())
+    LoadHudMenuGraphics();
   Hud_SearchForEquippedItem();
   Hud_DrawYButtonItems();
   Hud_DrawAbilityBox();
@@ -518,7 +777,7 @@ void Hud_Init() {  // 8dddab
     else if (link_item_bottle_index == 0)
       link_item_bottle_index = first_bottle + 1;
 
-    if (hud_cur_item == kHudItem_BottleOld && !kNewStyleInventory) {
+    if (hud_cur_item == kHudItem_BottleOld && !Hud_IsNewStyleInventory()) {
       timer_for_flashing_circle = 16;
       Hud_DrawBottleMenu();
     }
@@ -544,7 +803,7 @@ void Hud_ChooseNextMode() {  // 8dde6e
     Hud_DrawSelectedYButtonItem();
 
     // Pick either the bottle state or normal one
-    overworld_map_state = (hud_cur_item == kHudItem_BottleOld && !kNewStyleInventory) ? 10 : 4;
+    overworld_map_state = (hud_cur_item == kHudItem_BottleOld && !Hud_IsNewStyleInventory()) ? 10 : 4;
   } else {
     if (filtered_joypad_H)
       overworld_map_state = 5;
@@ -552,13 +811,16 @@ void Hud_ChooseNextMode() {  // 8dde6e
 }
 
 static bool Hud_DoWeHaveThisItem(uint8 item) {  // 8ddeb0
+  if (Hud_IsCustomHudSlot(item))
+    return ModItems_IsOwned((uint8)ModItems_IdFromHudSlot(item));
+
   if (item == 0)
     return true;  // for the x item, 0 is valid
 
-  if (item == kHudItem_Flute && kNewStyleInventory)
+  if (item == kHudItem_Flute && Hud_IsNewStyleInventory())
     return link_item_flute >= 2;
 
-  if (item == kHudItem_Shovel && kNewStyleInventory)
+  if (item == kHudItem_Shovel && Hud_IsNewStyleInventory())
     return link_item_flute >= 1;
 
   if (item >= kHudItem_Bottle1)
@@ -581,13 +843,13 @@ static void Hud_EquipNextItem(uint8 *item) {  // 8ddee2
 
 static void Hud_EquipItemAbove(uint8 *item) {  // 8ddeeb
   do {
-    for(int i = 0; i < (kNewStyleInventory ? 6 : 5); i++)
+    for(int i = 0; i < (Hud_IsNewStyleInventory() ? 6 : 5); i++)
       Hud_GotoPrevItem(item, 1);
   } while (!Hud_DoWeHaveThisItem(*item));
 }
 
 static void Hud_EquipItemBelow(uint8 *item) {  // 8ddf00
-  int num = *item == 0 ? 1 : (kNewStyleInventory ? 6 : 5);
+  int num = *item == 0 ? 1 : (Hud_IsNewStyleInventory() ? 6 : 5);
   do {
     for (int i = 0; i < num; i++)
       Hud_GotoNextItem(item, 1);
@@ -609,6 +871,24 @@ uint8 *GetCurrentItemButtonPtr(int i) {
          (i == 2) ? &hud_cur_item_l : &hud_cur_item_r;
 }
 
+// Returns true when |item| is equipped on the button that was pressed on this
+// frame: Y normally, or X/L/R with ItemSwitchLR. Sprites that check for the
+// Book of Mudora must use this instead of looking at hud_cur_item directly, or
+// the item only works while it is equipped to Y.
+bool Hud_IsItemButtonPressed(int item) {
+  if (hud_cur_item == item && (filtered_joypad_H & kJoypadH_Y))
+    return true;
+  if (enhanced_features0 & kFeatures0_SwitchLR) {
+    int btn_index = GetCurrentItemButtonIndex();
+    if (btn_index != 0) {
+      static const uint8 kButtonIndexKeys[4] = { 0, kJoypadL_X, kJoypadL_L, kJoypadL_R };
+      return *GetCurrentItemButtonPtr(btn_index) == item &&
+             (filtered_joypad_L & kButtonIndexKeys[btn_index]) != 0;
+    }
+  }
+  return false;
+}
+
 void Hud_NormalMenu() {  // 8ddf15
   timer_for_flashing_circle++;
   if (!BYTE(joypad1H_last))
@@ -620,8 +900,11 @@ void Hud_NormalMenu() {  // 8ddf15
     return;
   }
 
-  // Allow select to open the save/exit thing
-  if (joypad1H_last & kJoypadH_Select && sram_progress_indicator) {
+  // Allow select to open the save/exit thing. This is part of the
+  // ItemSwitchLR feature; with the feature off, Select must do nothing here
+  // like the original assembly, or the RAM comparison will diverge.
+  if (joypad1H_last & kJoypadH_Select && sram_progress_indicator &&
+      (enhanced_features0 & kFeatures0_SwitchLR)) {
     BG3VOFS_copy2 = -8;
     Hud_CloseMenu();
     DisplaySelectMenu();
@@ -630,9 +913,9 @@ void Hud_NormalMenu() {  // 8ddf15
 
   if (joypad1H_last & kJoypadH_Y && !(joypad1L_last & kJoypadL_X) && (enhanced_features0 & kFeatures0_SwitchLR)) {
     if (filtered_joypad_H & kJoypadH_Up) {
-      Hud_ReorderItem(kNewStyleInventory ? -6 : -5);
+      Hud_ReorderItem(Hud_IsNewStyleInventory() ? -6 : -5);
     } else if (filtered_joypad_H & kJoypadH_Down) {
-      Hud_ReorderItem(kNewStyleInventory ? 6 : 5);
+      Hud_ReorderItem(Hud_IsNewStyleInventory() ? 6 : 5);
     } else if (filtered_joypad_H & kJoypadH_Left) {
       Hud_ReorderItem(-1);
     } else if (filtered_joypad_H & kJoypadH_Right) {
@@ -660,7 +943,9 @@ void Hud_NormalMenu() {  // 8ddf15
   }
   Hud_DrawYButtonItems();
   Hud_DrawSelectedYButtonItem();
-  if (hud_cur_item == kHudItem_BottleOld && !kNewStyleInventory)
+  if (Hud_IsNewStyleInventory())
+    Hud_DrawMenuTimer(uvram_screen.row[0].col);
+  if (hud_cur_item == kHudItem_BottleOld && !Hud_IsNewStyleInventory())
     overworld_map_state = 7;
 
   nmi_subroutine_index = 1;
@@ -675,6 +960,9 @@ void Hud_UpdateHud() {  // 8ddfa9
 }
 
 uint8 Hud_LookupInventoryItem(uint8 item) {
+  if (Hud_IsCustomHudSlot(item))
+    return (uint8)ModItems_IdFromHudSlot(item);
+
   static const uint8 kHudItemToItemOrg[21] = {
     0,
     3,  2, 14, 1,  10,  5,
@@ -690,14 +978,15 @@ uint8 Hud_LookupInventoryItem(uint8 item) {
     8,  7, 12, 21, 18, 13, // 8 is ocarina / shovel combined. moved shovel to 21.
     19, 20,11, 11, 11, 11, // 11 means bottle
   };
-  return kNewStyleInventory ? kHudItemToItemNew[item] : kHudItemToItemOrg[item];
+  return Hud_IsNewStyleInventory() ? kHudItemToItemNew[item] : kHudItemToItemOrg[item];
 }
 
 void Hud_UpdateEquippedItem() {  // 8ddfaf
-  if (hud_cur_item >= kHudItem_Bottle1)
+  if (!Hud_IsCustomHudSlot(hud_cur_item) && hud_cur_item >= kHudItem_Bottle1)
     link_item_bottle_index = hud_cur_item - kHudItem_Bottle1 + 1;
 
-  assert(hud_cur_item < 25);
+  if (!Hud_IsCustomHudSlot(hud_cur_item))
+    assert(hud_cur_item < 25);
   current_item_y = Hud_LookupInventoryItem(hud_cur_item);
 }
 
@@ -727,7 +1016,7 @@ void Hud_GotoBottleMenu() {  // 8ddffb
 
 void Hud_InitBottleMenu() {  // 8de002
   int r = bottle_menu_expand_row;
-  uint16 *dst = uvram_screen.row[0].col + (kNewStyleInventory ? 1 : 0);
+  uint16 *dst = uvram_screen.row[0].col + (Hud_IsNewStyleInventory() ? 1 : 0);
   for (int i = 21; i <= 30; i++)
     dst[HUDXY(i, 11 + r)] = 0x207f;
 
@@ -745,7 +1034,7 @@ void Hud_ExpandBottleMenu() {  // 8de08c
   static const uint16 kBottleMenuBottom[] = { 0xA8FB, 0xA8F9, 0xA8F9, 0xA8F9, 0xA8F9, 0xA8F9, 0xA8F9, 0xA8F9, 0xA8F9, 0xE8FB };
 
   int r = bottle_menu_expand_row;
-  uint16 *dst = uvram_screen.row[0].col + (kNewStyleInventory ? 1 : 0);
+  uint16 *dst = uvram_screen.row[0].col + (Hud_IsNewStyleInventory() ? 1 : 0);
   memcpy(&dst[HUDXY(21, 11 + r)], kBottleMenuTop, sizeof(uint16) * 10);
   memcpy(&dst[HUDXY(21, 12 + r)], kBottleMenuTop2, sizeof(uint16) * 10);
   memcpy(&dst[HUDXY(21, 29)], kBottleMenuBottom, sizeof(uint16) * 10);
@@ -861,7 +1150,7 @@ static void Hud_DrawFlashingCircle(uint16 *p, uint8 palette) {  // new
 }
 
 void Hud_DrawBottleMenu() {  // 8def67
-  uint16 *dst = uvram_screen.row[0].col + (kNewStyleInventory ? 1 : 0);
+  uint16 *dst = uvram_screen.row[0].col + (Hud_IsNewStyleInventory() ? 1 : 0);
   Hud_DrawBox(dst, 21, 11, 30, 29, 2);
   for (int i = 0; i < 4; i++)
     Hud_DrawItem(dst + HUDXY(25, 13 + i * 4), &kHudItemBottles[link_bottle_info[i]]);
@@ -881,7 +1170,7 @@ void Hud_DrawBottleMenu_Update() {  // 8de17f
 }
 
 void Hud_EraseBottleMenu() {  // 8de2fd
-  uint16 *dst = uvram_screen.row[0].col + (kNewStyleInventory ? 1 : 0);
+  uint16 *dst = uvram_screen.row[0].col + (Hud_IsNewStyleInventory() ? 1 : 0);
   int r = bottle_menu_expand_row;
   for (int i = 0; i < 10; i++)
     dst[HUDXY(21 + i, 11 + r)] = 0x207f;
@@ -911,19 +1200,41 @@ void Hud_SearchForEquippedItem() {  // 8de399
   }
 }
 
+static const ItemBoxGfx *Hud_GetBaseIconForItem(int i) {
+  if (i <= 0)
+    return kHudItemEmpty;
+  if (i == kHudItem_Shovel && Hud_IsNewStyleInventory())
+    return &kHudItemFlute[1];
+  if (i >= kHudItem_Bottle1)
+    return &kHudItemBottles[1];
+  if (i == kHudItem_BottleOld && !Hud_IsNewStyleInventory())
+    return &kHudItemBottles[1];
+  return &kHudItemBoxGfxPtrs[i - 1][1];
+}
+
 static const ItemBoxGfx *Hud_GetIconForItem(int i) {
+  static ItemBoxGfx custom_icon;
+  if (Hud_IsCustomHudSlot(i)) {
+    int cell = Hud_GetItemPosition(i);
+    if (cell < 0 || cell >= Hud_ItemCount())
+      return kHudItemEmpty;
+    const ItemBoxGfx *base = Hud_GetBaseIconForItem(Hud_ItemAtNavPos(cell));
+    ModItems_InstallHudIcon(i, base->v, custom_icon.v);
+    return &custom_icon;
+  }
+
   if (i <= 0)
     return kHudItemEmpty;
 
   if (i >= kHudItem_Bottle1)
     return &kHudItemBottles[link_bottle_info[i - kHudItem_Bottle1]];
-  if (i == kHudItem_Shovel && kNewStyleInventory)
+  if (i == kHudItem_Shovel && Hud_IsNewStyleInventory())
     return &kHudItemFlute[link_item_flute >= 1];
 
   uint8 item_val = (&link_item_bow)[i - 1];
   if (i == kHudItem_Bombs) // bombs
     item_val = (item_val != 0);
-  else if (i == kHudItem_BottleOld && !kNewStyleInventory)
+  else if (i == kHudItem_BottleOld && !Hud_IsNewStyleInventory())
     item_val = link_item_bottle_index ? link_bottle_info[link_item_bottle_index - 1] : 0;
   return &kHudItemBoxGfxPtrs[i - 1][item_val];
 }
@@ -985,10 +1296,193 @@ static void CopyTilesForSwitchLR(int switch_lr) {
 
 static const uint8 kSwitchLR_palettes[] = { 7, 3, 4, 4 };
 
+// The 24-slot Redux menu uses a single wide box, a title strip and a bottom
+// row for the equipment/ability icons. These tile ids come from the imported
+// Redux menu graphics; the layout itself is independent of the asset pack.
+static void Hud_DrawNewStyleFrame(uint16 *dst, bool clear_interior) {
+  // Top border and title strip (rows 6..8).
+  dst[HUDXY(1, 6)] = 0x2CFB;
+  for (int x = 2; x <= 29; x++)
+    dst[HUDXY(x, 6)] = 0x2C82;
+  dst[HUDXY(30, 6)] = 0x6CFB;
+
+  for (int y = 7; y <= 8; y++) {
+    dst[HUDXY(1, y)] = 0x2CFC;
+    dst[HUDXY(30, y)] = 0x6CFC;
+    for (int x = 2; x <= 9; x++)
+      dst[HUDXY(x, y)] = 0x2C83;
+    for (int x = 19; x <= 29; x++)
+      dst[HUDXY(x, y)] = 0x2C83;
+    for (int i = 0; i < 9; i++)
+      dst[HUDXY(10 + i, y)] = 0x2C01 + (y - 7) + i * 2;
+  }
+
+  // Interior, divider above the bottom row and the shared bottom border.
+  for (int y = 9; y <= 25; y++) {
+    dst[HUDXY(1, y)] = 0x2CFC;
+    dst[HUDXY(30, y)] = 0x6CFC;
+    if (clear_interior) {
+      for (int x = 2; x <= 29; x++)
+        dst[HUDXY(x, y)] = 0x2CF5;
+    }
+  }
+  for (int x = 2; x <= 20; x++)
+    dst[HUDXY(x, 23)] = 0x2C19;
+  dst[HUDXY(21, 23)] = 0x2C1A;
+  for (int x = 22; x <= 29; x++)
+    dst[HUDXY(x, 23)] = 0x2C19;
+
+  dst[HUDXY(1, 26)] = 0xACFB;
+  for (int x = 2; x <= 6; x++)
+    dst[HUDXY(x, 26)] = 0xAC82;
+  dst[HUDXY(7, 26)] = 0x2CAA;
+  for (int x = 8; x <= 24; x++)
+    dst[HUDXY(x, 26)] = 0x2CAF;
+  dst[HUDXY(25, 26)] = 0x6CAA;
+  for (int x = 26; x <= 29; x++)
+    dst[HUDXY(x, 26)] = 0xAC82;
+  dst[HUDXY(30, 26)] = 0xECFB;
+
+  // Selected item name box (rows 27..28).
+  dst[HUDXY(7, 27)] = 0x2CF0;
+  dst[HUDXY(24, 27)] = 0x6CF0;
+  for (int x = 8; x <= 23; x++)
+    dst[HUDXY(x, 27)] = 0x24F5;
+  dst[HUDXY(7, 28)] = 0x2CF1;
+  dst[HUDXY(24, 28)] = 0x6CF1;
+  for (int x = 8; x <= 23; x++)
+    dst[HUDXY(x, 28)] = 0x2CF2;
+}
+
+static void Hud_DrawMenuTimer(uint16 *dst) {
+  if (!Hud_IsMenuTimer())
+    return;
+  static const uint16 kMenuTimerDigits[10] = {
+    0x2414, 0x2415, 0x2416, 0x2417, 0x2418,
+    0x2424, 0x2425, 0x2426, 0x2427, 0x2428,
+  };
+  uint16 minutes = WORD(g_ram[0xF339]);
+  if (minutes >= 6000)
+    minutes = 0;
+  int hours = minutes / 60;
+  int mins = minutes % 60;
+  dst[HUDXY(23, 13)] = kMenuTimerDigits[hours / 10];
+  dst[HUDXY(24, 13)] = kMenuTimerDigits[hours % 10];
+  dst[HUDXY(25, 13)] = 0x241D;
+  dst[HUDXY(26, 13)] = kMenuTimerDigits[mins / 10];
+  dst[HUDXY(27, 13)] = kMenuTimerDigits[mins % 10];
+}
+
+static void Hud_DrawNewStyleProgressIcons(uint16 *dst) {
+  static const uint16 kCrystalsLabel[8] = {
+    0x2552, 0x2561, 0x2568, 0x2562, 0x2563, 0x2550, 0x255B, 0x2562,
+  };
+  static const uint16 kPendantsLabel[8] = {
+    0x255F, 0x2554, 0x255D, 0x2553, 0x2550, 0x255D, 0x2563, 0x2562,
+  };
+  static const ItemBoxGfx kCrystalBg = {{0x3146, 0x3147, 0x3146, 0x3147}};
+  static const ItemBoxGfx kPendants0[2] = {
+    {{0x313B, 0x313C, 0x313D, 0x313E}},
+    {{0x252B, 0x252C, 0x252D, 0x252E}},
+  };
+  static const ItemBoxGfx kPendants1[2] = {
+    {{0x313B, 0x313C, 0x313D, 0x313E}},
+    {{0x2D2B, 0x2D2C, 0x2D2D, 0x2D2E}},
+  };
+  static const ItemBoxGfx kPendants2[2] = {
+    {{0x313B, 0x313C, 0x313D, 0x313E}},
+    {{0x3D2B, 0x3D2C, 0x3D2D, 0x3D2E}},
+  };
+
+  // Side border and the two top rims leave room for the timer above the
+  // CRYSTALS/PENDANTS header.
+  for (int y = 9; y <= 11; y++)
+    dst[HUDXY(21, y)] = 0x2C1C;
+  dst[HUDXY(21, 12)] = 0x2C1B;
+  for (int x = 22; x <= 29; x++)
+    dst[HUDXY(x, 12)] = 0x2C19;
+  dst[HUDXY(21, 14)] = 0x2C1B;
+  for (int x = 22; x <= 29; x++)
+    dst[HUDXY(x, 14)] = 0x2C19;
+  for (int y = 15; y <= 22; y++)
+    dst[HUDXY(21, y)] = 0x2C1C;
+
+  Hud_DrawMenuTimer(dst);
+
+  if (sram_progress_indicator < 3) {
+    Hud_DrawNxN(dst + HUDXY(22, 15), kPendantsLabel, 8, 1);
+    Hud_DrawItem(dst + HUDXY(25, 17), &kPendants0[(link_which_pendants >> 0) & 1]);
+    Hud_DrawItem(dst + HUDXY(23, 20), &kPendants1[(link_which_pendants >> 1) & 1]);
+    Hud_DrawItem(dst + HUDXY(27, 20), &kPendants2[(link_which_pendants >> 2) & 1]);
+  } else {
+    Hud_DrawNxN(dst + HUDXY(22, 15), kCrystalsLabel, 8, 1);
+    Hud_DrawItem(dst + HUDXY(24, 17), &kCrystalBg);
+    Hud_DrawItem(dst + HUDXY(26, 17), &kCrystalBg);
+    Hud_DrawItem(dst + HUDXY(23, 19), &kCrystalBg);
+    Hud_DrawItem(dst + HUDXY(25, 19), &kCrystalBg);
+    Hud_DrawItem(dst + HUDXY(27, 19), &kCrystalBg);
+    Hud_DrawItem(dst + HUDXY(24, 21), &kCrystalBg);
+    Hud_DrawItem(dst + HUDXY(26, 21), &kCrystalBg);
+
+    uint8 f = link_has_crystals;
+    if (f & 1) {
+      dst[HUDXY(24, 17)] = 0x2D44;
+      dst[HUDXY(25, 17)] = 0x2D45;
+    }
+    if (f & 2) {
+      dst[HUDXY(26, 17)] = 0x2D44;
+      dst[HUDXY(27, 17)] = 0x2D45;
+    }
+    if (f & 4) {
+      dst[HUDXY(23, 19)] = 0x2D44;
+      dst[HUDXY(24, 19)] = 0x2D45;
+    }
+    if (f & 8) {
+      dst[HUDXY(25, 19)] = 0x2D44;
+      dst[HUDXY(26, 19)] = 0x2D45;
+    }
+    if (f & 16) {
+      dst[HUDXY(27, 19)] = 0x2D44;
+      dst[HUDXY(28, 19)] = 0x2D45;
+    }
+    if (f & 32) {
+      dst[HUDXY(24, 21)] = 0x2D44;
+      dst[HUDXY(25, 21)] = 0x2D45;
+    }
+    if (f & 64) {
+      dst[HUDXY(26, 21)] = 0x2D44;
+      dst[HUDXY(27, 21)] = 0x2D45;
+    }
+  }
+}
+
+static void Hud_DrawCustomItems(uint16 *dst) {
+  for (int i = 0; i < ModItems_Count(); i++) {
+    int slot = kModItemHudBase + i;
+    if (!ModItems_IsCustomHudSlot(slot) ||
+        !ModItems_IsOwned((uint8)ModItems_IdFromHudSlot(slot)))
+      continue;
+    int cell = Hud_CustomFreeCell(slot);
+    if (cell >= 0 && cell < Hud_ItemCount())
+      Hud_DrawItem(dst + kHudItemInVramPtr[cell], Hud_GetIconForItem(slot));
+  }
+}
+
 void Hud_DrawYButtonItems() {  // 8de3d9
   uint16 *dst = uvram_screen.row[0].col;
-  int x = kNewStyleInventory ? 0 : 1;
+  ModItems_BeginHudIcons();
 
+  if (Hud_IsNewStyleInventory()) {
+    Hud_DrawNewStyleFrame(dst, overworld_map_state == 1);
+    for (int i = 0; i < Hud_ItemCount(); i++) {
+      int j = hud_inventory_order[i];
+      Hud_DrawItem(dst + kHudItemInVramPtr[i], Hud_GetIconForItem(j == 0 ? i + 1: j) );
+    }
+    Hud_DrawCustomItems(dst);
+    return;
+  }
+
+  int x = 1;
   int btn_index = GetCurrentItemButtonIndex();
   CopyTilesForSwitchLR(btn_index);
   Hud_DrawBox(dst, x, 5, 20 - x, 19, kSwitchLR_palettes[btn_index]);
@@ -999,36 +1493,24 @@ void Hud_DrawYButtonItems() {  // 8de3d9
     {0x200C | 4 << 10, 0x200D | 4 << 10}   // R
    };
 
-  if (!kNewStyleInventory) {
-    dst[HUDXY(2, 6)] = kEquipmentLetterTiles[btn_index][0];
-    dst[HUDXY(2, 7)] = kEquipmentLetterTiles[btn_index][1]; 
-  }
+  dst[HUDXY(2, 6)] = kEquipmentLetterTiles[btn_index][0];
+  dst[HUDXY(2, 7)] = kEquipmentLetterTiles[btn_index][1]; 
   dst[HUDXY(x + 2, 5)] = 0x246E;
   dst[HUDXY(x + 3, 5)] = 0x246F;
 
-  for (int i = 0; i < kHudItemCount; i++) {
+  for (int i = 0; i < Hud_ItemCount(); i++) {
     int j = hud_inventory_order[i];
     Hud_DrawItem(dst + kHudItemInVramPtr[i], Hud_GetIconForItem(j == 0 ? i + 1: j) );
   }
+  Hud_DrawCustomItems(dst);
 }
 
 void Hud_DrawAbilityBox() {  // 8de6b6
-  static const uint16 kHudAbilityText[80] = {
-    0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2d5b, 0x2d58, 0x2d55, 0x2d63, 0x2d27,
-    0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2d61, 0x2d54, 0x2d50, 0x2d53,
-    0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2d63, 0x2d50, 0x2d5b, 0x2d5a,
-    0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f,
-    0x2cf5, 0x2cf5, 0x2c2e, 0x2cf5, 0x2cf5, 0x2d5f, 0x2d64, 0x2d5b, 0x2d5b, 0x2cf5,
-    0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2d61, 0x2d64, 0x2d5d, 0x2cf5,
-    0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2d62, 0x2d66, 0x2d58, 0x2d5c,
-    0x2cf5, 0x2cf5, 0x2cf5, 0x207f, 0x207f, 0x2c01, 0x2c18, 0x2c28, 0x207f, 0x207f,
-  };
-  static const uint16 kHudGlovesText[20] = {
-    0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2d5b, 0x2d58, 0x2d55, 0x2d63, 0x2d28,
-    0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2d5b, 0x2d58, 0x2d55, 0x2d63, 0x2d29,
-  };
+  if (Hud_IsNewStyleInventory())
+    return;  // The new layout draws these icons in Hud_DrawEquipmentBox.
+
   uint16 *dst = uvram_screen.row[0].col;
-  int x = kNewStyleInventory ? 0 : 1;
+  int x = Hud_IsNewStyleInventory() ? 0 : 1;
 
   Hud_DrawBox(dst, x, 21, 19, 29, 1);
 
@@ -1040,7 +1522,7 @@ void Hud_DrawAbilityBox() {  // 8de6b6
     }
   }
   // A
-  if (!kNewStyleInventory) {
+  if (!Hud_IsNewStyleInventory()) {
     dst[HUDXY(2, 22)] = 0xA4F0;
     dst[HUDXY(2, 23)] = 0x24F2;
   }
@@ -1057,10 +1539,13 @@ void Hud_DrawAbilityBox() {  // 8de6b6
 }
 
 void Hud_DrawProgressIcons() {  // 8de9c8
-  if (sram_progress_indicator < 3)
+  if (Hud_IsNewStyleInventory()) {
+    Hud_DrawNewStyleProgressIcons(uvram_screen.row[0].col);
+  } else if (sram_progress_indicator < 3) {
     Hud_DrawProgressIcons_Pendants();
-  else
+  } else {
     Hud_DrawProgressIcons_Crystals();
+  }
 }
 
 void Hud_DrawProgressIcons_Pendants() {  // 8de9d3
@@ -1087,7 +1572,7 @@ void Hud_DrawProgressIcons_Pendants() {  // 8de9d3
     {{0x313b, 0x313c, 0x313d, 0x313e}},
     {{0x3d2b, 0x3d2c, 0x3d2d, 0x3d2e}},
   };
-  uint16 *dst = uvram_screen.row[0].col + (kNewStyleInventory ? HUDXY(22, 11) : HUDXY(21, 11));
+  uint16 *dst = uvram_screen.row[0].col + (Hud_IsNewStyleInventory() ? HUDXY(22, 11) : HUDXY(21, 11));
   Hud_DrawNxN(dst, kProgressIconPendantsBg, 10, 9);
   Hud_DrawItem(dst + HUDXY(4, 3), &kHudPendants0[(link_which_pendants >> 0) & 1]);
   Hud_DrawItem(dst + HUDXY(2, 6), &kHudPendants1[(link_which_pendants >> 1) & 1]);
@@ -1107,7 +1592,7 @@ void Hud_DrawProgressIcons_Crystals() {  // 8dea62
     0xa8fb, 0xa8f9, 0xa8f9, 0xa8f9, 0xa8f9, 0xa8f9, 0xa8f9, 0xa8f9, 0xa8f9, 0xe8fb,
   };
 
-  uint16 *dst = uvram_screen.row[0].col + (kNewStyleInventory ? HUDXY(22, 11) : HUDXY(21, 11));
+  uint16 *dst = uvram_screen.row[0].col + (Hud_IsNewStyleInventory() ? HUDXY(22, 11) : HUDXY(21, 11));
   Hud_DrawNxN(dst, kProgressIconCrystalsBg, 10, 9);
 
   uint8 f = link_has_crystals;
@@ -1141,135 +1626,79 @@ void Hud_DrawProgressIcons_Crystals() {  // 8dea62
   }
 }
 
-void Hud_DrawSelectedYButtonItem() {  // 8deb3a
-  static const uint16 kHudBottlesItemText[128] = {
-    0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x255c, 0x2564, 0x2562, 0x2557, 0x2561, 0x255e, 0x255e, 0x255c,
-    0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2551, 0x255e, 0x2563, 0x2563, 0x255b, 0x2554, 0x24f5, 0x24f5,
-    0x255b, 0x2558, 0x2555, 0x2554, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x255c, 0x2554, 0x2553, 0x2558, 0x2552, 0x2558, 0x255d, 0x2554,
-    0x255c, 0x2550, 0x2556, 0x2558, 0x2552, 0x24f5, 0x24f5, 0x24f5, 0x255c, 0x2554, 0x2553, 0x2558, 0x2552, 0x2558, 0x255d, 0x2554,
-    0x2552, 0x2564, 0x2561, 0x2554, 0x256a, 0x2550, 0x255b, 0x255b, 0x255c, 0x2554, 0x2553, 0x2558, 0x2552, 0x2558, 0x255d, 0x2554,
-    0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2555, 0x2550, 0x2554, 0x2561, 0x2558, 0x2554, 0x24f5, 0x24f5,
-    0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2551, 0x2554, 0x2554, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5,
-    0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2556, 0x255e, 0x255e, 0x2553, 0x24f5, 0x2551, 0x2554, 0x2554,
-  };
-  static const uint16 kHudMushroomItemText[16] = {
-    0x255c, 0x2550, 0x2556, 0x2558, 0x2552, 0x24f5, 0x24f5, 0x24f5,
-    0x24f5, 0x255f, 0x255e, 0x2566, 0x2553, 0x2554, 0x2561, 0x24f5,
-  };
-  static const uint16 kHudFluteItemText[32] = {
-    0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2555, 0x255b, 0x2564, 0x2563, 0x2554, 0x24f5, 0x24f5, 0x24f5,
-    0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2555, 0x255b, 0x2564, 0x2563, 0x2554, 0x24f5, 0x24f5, 0x24f5
-  };
-  static const uint16 kHudMirrorItemText[16] = {
-    0x255c, 0x2550, 0x2556, 0x2558, 0x2552, 0x24f5, 0x24f5, 0x24f5,
-    0x24f5, 0x24f5, 0x255c, 0x2558, 0x2561, 0x2561, 0x255e, 0x2561
-  };
-  static const uint16 kHudBowItemText[48] = {
-    0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x256b, 0x256c, 0x256e, 0x256f, 0x257c, 0x257d, 0x257e, 0x257f,
-    0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x256b, 0x256c, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5,
-    0x256b, 0x256c, 0x24f5, 0x256e, 0x256f, 0x24f5, 0x24f5, 0x24f5, 0x2578, 0x2579, 0x257a, 0x257b, 0x257c, 0x257d, 0x257e, 0x257f,
-  };
-  static const uint16 kHudItemText[320] = {
-    0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x256b, 0x256c, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5,
-    0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2570, 0x2571, 0x2572, 0x2573, 0x2574, 0x2575, 0x2576, 0x2577,
-    0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2557, 0x255e, 0x255e, 0x255a, 0x2562, 0x2557, 0x255e, 0x2563,
-    0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2551, 0x255e, 0x255c, 0x2551, 0x24f5, 0x24f5, 0x24f5, 0x24f5,
-    0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x255c, 0x2564, 0x2562, 0x2557, 0x2561, 0x255e, 0x255e, 0x255c,
-    
-    0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2555, 0x2558, 0x2561, 0x2554, 0x2561, 0x255e, 0x2553, 0x24f5,
-    0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2558, 0x2552, 0x2554, 0x2561, 0x255e, 0x2553, 0x24f5, 0x24f5,
-    0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2551, 0x255e, 0x255c, 0x2551, 0x255e, 0x2562, 0x24f5, 0x24f5,
-    0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2554, 0x2563, 0x2557, 0x2554, 0x2561, 0x24f5, 0x24f5, 0x24f5,
-    0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2560, 0x2564, 0x2550, 0x255a, 0x2554, 0x24f5, 0x24f5, 0x24f5,
-    0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x255b, 0x2550, 0x255c, 0x255f, 0x24f5, 0x24f5, 0x24f5, 0x24f5,
-    0x255c, 0x2550, 0x2556, 0x2558, 0x2552, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2557, 0x2550, 0x255c, 0x255c, 0x2554, 0x2561,
-    0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2562, 0x2557, 0x255e, 0x2565, 0x2554, 0x255b, 0x24f5, 0x24f5,
-    0x2400, 0x2401, 0x2402, 0x2403, 0x2404, 0x2405, 0x2406, 0x2407, 0x2408, 0x2409, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5,
-    0x2551, 0x255e, 0x255e, 0x255a, 0x24f5, 0x255e, 0x2555, 0x24f5, 0x255c, 0x2564, 0x2553, 0x255e, 0x2561, 0x2550, 0x24f5, 0x24f5,
-    0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x255c, 0x2564, 0x2562, 0x2557, 0x2561, 0x255e, 0x255e, 0x255c,
-    0x2552, 0x2550, 0x255d, 0x2554, 0x24f5, 0x255e, 0x2555, 0x24f5, 0x24f5, 0x2562, 0x255e, 0x255c, 0x2550, 0x2561, 0x2558, 0x2550,
-    0x2552, 0x2550, 0x255d, 0x2554, 0x24f5, 0x255e, 0x2555, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2551, 0x2568, 0x2561, 0x255d, 0x2550,
-    0x255c, 0x2550, 0x2556, 0x2558, 0x2552, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x2552, 0x2550, 0x255f, 0x2554, 0x24f5,
-    0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5, 0x24f5,
-  };
-
+static const uint16 *Hud_GetSelectedItemText(int item, int btn_index) {
+  if (Hud_IsCustomHudSlot(item))
+    return ModItems_HudNameTiles(item);
+  if (item == kHudItem_BottleOld && !Hud_IsNewStyleInventory() && link_item_bottle_index)
+    return &kHudBottlesItemText[(link_bottle_info[link_item_bottle_index - 1] - 1) * 16];
+  if (item == 5 && link_item_mushroom != 1)
+    return &kHudMushroomItemText[(link_item_mushroom - 2) * 16];
+  if (item == 20 && link_item_mirror != 1)
+    return &kHudMirrorItemText[(link_item_mirror - 2) * 16];
+  if (item == 13 && link_item_flute != 1)
+    return &kHudFluteItemText[(link_item_flute - 2) * 16];
+  if (item == 1 && link_item_bow != 1)
+    return &kHudBowItemText[(link_item_bow - 2) * 16];
+  if (item >= kHudItem_Bottle1 && item <= kHudItem_Bottle4)
+    return &kHudBottlesItemText[(link_bottle_info[item - kHudItem_Bottle1] - 1) * 16];
+  if (item == kHudItem_Shovel)
+    return &kHudItemText[(13 - 1) * 16];
+  if (item == 0) {
 #define L(x) (x == ' ' ? 0x24f5 : 0x2550 + x - 'A')
-  const uint16 kNotAssignedItemText[16] = {
-    L('N'), L('O'), L('T'), L(' '), L(' '), L(' '), L(' '), L(' '),
-    L('A'), L('S'), L('S'), L('I'), L('G'), L('N'), L('E'), L('D'),
-  };
+    static const uint16 kNotAssignedItemText[16] = {
+      L('N'), L('O'), L('T'), L(' '), L(' '), L(' '), L(' '), L(' '),
+      L('A'), L('S'), L('S'), L('I'), L('G'), L('N'), L('E'), L('D'),
+    };
 #undef L
+    return btn_index ? kNotAssignedItemText : &kHudItemText[(20 - 1) * 16];
+  }
+  return &kHudItemText[(item - 1) * 16];
+}
 
+void Hud_DrawSelectedYButtonItem() {  // 8deb3a
   uint16 *dst_org = uvram_screen.row[0].col;
-  uint16 *dst_box = dst_org + (kNewStyleInventory ? 1 : 0);
-  
   int btn_index = GetCurrentItemButtonIndex();
   int item = *GetCurrentItemButtonPtr(btn_index);
+
+  if (Hud_IsNewStyleInventory()) {
+    const uint16 *src_p = Hud_GetSelectedItemText(item, btn_index);
+    // The Redux name box is one row tall and is part of the shared bottom
+    // border. Its 16-word name table is drawn as one 16-tile line.
+    Hud_DrawNxN(dst_org + HUDXY(8, 27), src_p, 16, 1);
+    int pos = Hud_GetItemPosition(item);
+    if (item != 0 && pos >= 0 && pos < Hud_ItemCount() && (timer_for_flashing_circle & 0x10)) {
+      uint16 *p = dst_org + kHudItemInVramPtr[pos];
+      Hud_DrawFlashingCircle(p, kSwitchLR_palettes[btn_index]);
+    }
+    return;
+  }
+
+  uint16 *dst_box = dst_org + (Hud_IsNewStyleInventory() ? 1 : 0);
   Hud_DrawBox(dst_box, 21, 5, 21 + 9, 10, kSwitchLR_palettes[btn_index]);
 
   // Display either the current item or the item assigned
   // to the x, l, or r key.
   if (item != 0) {
-    uint16 *p = dst_org + kHudItemInVramPtr[Hud_GetItemPosition(item)];
-    Hud_Copy2x2(dst_box + HUDXY(25, 6), p);
-    if (timer_for_flashing_circle & 0x10)
-      Hud_DrawFlashingCircle(p, kSwitchLR_palettes[btn_index]);
+    int pos = Hud_GetItemPosition(item);
+    if (pos >= 0 && pos < Hud_ItemCount()) {
+      uint16 *p = dst_org + kHudItemInVramPtr[pos];
+      Hud_Copy2x2(dst_box + HUDXY(25, 6), p);
+      if (timer_for_flashing_circle & 0x10)
+        Hud_DrawFlashingCircle(p, kSwitchLR_palettes[btn_index]);
+    }
   }
 
-  const uint16 *src_p;
-  if (item == kHudItem_BottleOld && !kNewStyleInventory && link_item_bottle_index) {
-    src_p = &kHudBottlesItemText[(link_bottle_info[link_item_bottle_index - 1] - 1) * 16];
-  } else if (item == 5 && link_item_mushroom != 1) {
-    src_p = &kHudMushroomItemText[(link_item_mushroom - 2) * 16];
-  } else if (item == 20 && link_item_mirror != 1) {
-    src_p = &kHudMirrorItemText[(link_item_mirror - 2) * 16];
-  } else if (item == 13 && link_item_flute != 1) {
-    src_p = &kHudFluteItemText[(link_item_flute - 2) * 16];
-  } else if (item == 1 && link_item_bow != 1) {
-    src_p = &kHudBowItemText[(link_item_bow - 2) * 16];
-  } else if (item >= kHudItem_Bottle1 && item <= kHudItem_Bottle4) {
-    src_p = &kHudBottlesItemText[(link_bottle_info[item - kHudItem_Bottle1] - 1) * 16];
-  } else if (item == kHudItem_Shovel) {
-    src_p = &kHudItemText[(13 - 1) * 16];
-  } else if (item == 0) {
-    src_p = btn_index ? kNotAssignedItemText : &kHudItemText[(20 - 1) * 16];
-  } else {
-    src_p = &kHudItemText[(item - 1) * 16];
-  }
+  const uint16 *src_p = Hud_GetSelectedItemText(item, btn_index);
   Hud_DrawNxN(dst_box + HUDXY(22, 8), src_p, 8, 2);
 }
 
 void Hud_DrawEquipmentBox() {  // 8ded29
-  uint16 *dst = uvram_screen.row[0].col + (kNewStyleInventory ? 1 : 0);
-
-  Hud_DrawBox(dst, 21, 21, 30, 29, 2);
-
-  // Draw dotted lines
-  for (int i = 0; i < 8; i++)
-    dst[HUDXY(22 + i, 25)] = 0x28D7;
-
-  static const uint16 kHudEquipmentDungeonItemText[16] = {
-    0x2479, 0x247a, 0x247b, 0x247c, 0x248c, 0x24f5, 0x24f5, 0x24f5,
-    0x2469, 0x246a, 0x246b, 0x246c, 0x246d, 0x246e, 0x246f, 0x24f5,
-  };
-  memcpy(dst + HUDXY(22, 22), &kHudEquipmentDungeonItemText[0], 8 * sizeof(uint16));
-  memcpy(dst + HUDXY(22, 26), &kHudEquipmentDungeonItemText[8], 8 * sizeof(uint16));
-
   static const ItemBoxGfx kHudItemHeartPieces[4] = {
     {{0x2484, 0x6484, 0x2485, 0x6485}},
     {{0x24ad, 0x6484, 0x2485, 0x6485}},
     {{0x24ad, 0x6484, 0x24ae, 0x6485}},
     {{0x24ad, 0x64ad, 0x24ae, 0x6485}},
   };
-  if (cur_palace_index_x2 == 0xff) {
-    for (int i = 0; i < 8; i++)
-      dst[HUDXY(22 + i, 26)] = 0x24F5;
-    Hud_DrawItem(dst + HUDXY(25, 27), &kHudItemHeartPieces[link_heart_pieces]);
-  }
-  Hud_DrawItem(dst + HUDXY(22, 23), &kHudItemSword[link_sword_type == 0xff ? 0 : link_sword_type]);
-  Hud_DrawItem(dst + HUDXY(25, 23), &kHudItemShield[link_shield_type]);
-  Hud_DrawItem(dst + HUDXY(28, 23), &kHudItemArmor[link_armor]);
-
   static const ItemBoxGfx kHudItemPalaceItem[2] = {
     {{0x28d6, 0x68d6, 0x28e6, 0x28e7}},
     {{0x354b, 0x354c, 0x354d, 0x354e}},
@@ -1280,6 +1709,54 @@ void Hud_DrawEquipmentBox() {  // 8ded29
   static const ItemBoxGfx kHudItemDungeonCompass[1] = {
     {{0x24bf, 0x64bf, 0x2ccf, 0x6ccf}},
   };
+
+  uint16 *dst = uvram_screen.row[0].col;
+  if (Hud_IsNewStyleInventory()) {
+    // The 24-slot Redux layout puts every ability/equipment icon in the
+    // bottom row and the dungeon items in the blank strip above the
+    // progress panel.
+    Hud_DrawItem(dst + HUDXY(4, 24), &kHudItemGloves[link_item_gloves]);
+    Hud_DrawItem(dst + HUDXY(7, 24), &kHudItemBoots[link_item_boots]);
+    Hud_DrawItem(dst + HUDXY(10, 24), &kHudItemFlippers[link_item_flippers]);
+    Hud_DrawItem(dst + HUDXY(13, 24), &kHudItemMoonPearl[link_item_moon_pearl]);
+    Hud_DrawItem(dst + HUDXY(16, 24), &kHudItemShield[link_shield_type]);
+    Hud_DrawItem(dst + HUDXY(19, 24), &kHudItemSword[link_sword_type == 0xff ? 0 : link_sword_type]);
+    Hud_DrawItem(dst + HUDXY(22, 24), &kHudItemArmor[link_armor]);
+    Hud_DrawItem(dst + HUDXY(25, 24), &kHudItemHeartPieces[link_heart_pieces]);
+
+    if (cur_palace_index_x2 != 0xff &&
+       (link_dungeon_map << (cur_palace_index_x2 >> 1)) & 0x8000) {
+      Hud_DrawItem(dst + HUDXY(23, 10), &kHudItemDungeonMap[0]);
+    }
+    if (cur_palace_index_x2 != 0xff &&
+       (link_compass << (cur_palace_index_x2 >> 1)) & 0x8000) {
+      Hud_DrawItem(dst + HUDXY(25, 10), &kHudItemDungeonCompass[0]);
+    }
+    if (cur_palace_index_x2 != 0xff &&
+       (link_bigkey << (cur_palace_index_x2 >> 1)) & 0x8000) {
+      Hud_DrawItem(dst + HUDXY(27, 10), &kHudItemPalaceItem[CheckPalaceItemPosession()]);
+    }
+    return;
+  }
+
+  Hud_DrawBox(dst, 21, 21, 30, 29, 2);
+
+  // Draw dotted lines
+  for (int i = 0; i < 8; i++)
+    dst[HUDXY(22 + i, 25)] = 0x28D7;
+
+  memcpy(dst + HUDXY(22, 22), &kHudEquipmentDungeonItemText[0], 8 * sizeof(uint16));
+  memcpy(dst + HUDXY(22, 26), &kHudEquipmentDungeonItemText[8], 8 * sizeof(uint16));
+
+  if (cur_palace_index_x2 == 0xff) {
+    for (int i = 0; i < 8; i++)
+      dst[HUDXY(22 + i, 26)] = 0x24F5;
+    Hud_DrawItem(dst + HUDXY(25, 27), &kHudItemHeartPieces[link_heart_pieces]);
+  }
+  Hud_DrawItem(dst + HUDXY(22, 23), &kHudItemSword[link_sword_type == 0xff ? 0 : link_sword_type]);
+  Hud_DrawItem(dst + HUDXY(25, 23), &kHudItemShield[link_shield_type]);
+  Hud_DrawItem(dst + HUDXY(28, 23), &kHudItemArmor[link_armor]);
+
   if (cur_palace_index_x2 != 0xff &&
      (link_bigkey << (cur_palace_index_x2 >> 1)) & 0x8000) {
     Hud_DrawItem(dst + HUDXY(28, 27), &kHudItemPalaceItem[CheckPalaceItemPosession()]);
@@ -1315,7 +1792,7 @@ void Hud_AnimateHeartRefill() {  // 8df14f
   if (--animate_heart_refill_countdown)
     return;
   uint16 n = ((uint16)((link_health_current & ~7) - 1) >> 3) << 1;
-  uint16 *p = hud_tile_indices_buffer + HUDXY(20, 1);
+  uint16 *p = hud_tile_indices_buffer + Hud_HeartsStart();
   if (n >= 20) {
     n -= 20;
     p += 0x20;
@@ -1357,8 +1834,11 @@ void Hud_RebuildIndoor() {  // 8dfa60
 
 static void Hud_UpdateItemBox() {  // 8dfafd
   // Update r
-  if (hud_cur_item)
-    Hud_DrawItem(&hud_tile_indices_buffer[HUDXY(5, 1)], Hud_GetIconForItem(hud_cur_item));
+  if (hud_cur_item) {
+    int x = Hud_IsReduxHud() ? 28 : 5;
+    Hud_DrawItem(&hud_tile_indices_buffer[HUDXY(x, 1)],
+                 Hud_GetIconForItem(hud_cur_item));
+  }
 }
 
 static void Hud_UpdateHearts_Inner(uint16 *dst, const uint16 *src, int n) {  // 8dfdab
@@ -1384,11 +1864,40 @@ static void Hud_Update_Hearts() {  // 8dfb94
   static const uint16 kHudItemBoxTab1[] = { 0x24A2, 0x24A2, 0x24A2 };
   static const uint16 kHudItemBoxTab2[] = { 0x24A2, 0x24A1, 0x24A0 };
   // The life meter
-  Hud_UpdateHearts_Inner(&hud_tile_indices_buffer[HUDXY(20, 1)], kHudItemBoxTab1, link_health_capacity);
-  Hud_UpdateHearts_Inner(&hud_tile_indices_buffer[HUDXY(20, 1)], kHudItemBoxTab2, (link_health_current + 3) & ~3);
+  uint16 *dst = &hud_tile_indices_buffer[Hud_HeartsStart()];
+  Hud_UpdateHearts_Inner(dst, kHudItemBoxTab1, link_health_capacity);
+  Hud_UpdateHearts_Inner(dst, kHudItemBoxTab2, (link_health_current + 3) & ~3);
+}
+
+static void Hud_Update_HorizontalMagic() {
+  // Redux's meter is ten tiles wide: two caps and eight fill segments.
+  // Half magic turns the blue palette on, matching the Redux meter.
+  bool half = link_magic_consumption >= 1;
+  uint16 full = half ? 0x2C5E : 0x3C5E;
+  uint16 empty = half ? 0x2C4F : 0x3C4F;
+  int filled = (link_magic_power + 15) >> 4;
+  if (filled > 8)
+    filled = 8;
+
+  int y = Hud_IsReduxHud() ? 2 : 4;
+  uint16 *dst = hud_tile_indices_buffer;
+  dst[HUDXY(3, y)] = 0x2850;
+  dst[HUDXY(3, y + 1)] = 0xA850;
+  dst[HUDXY(12, y)] = 0x6850;
+  dst[HUDXY(12, y + 1)] = 0xE850;
+  for (int i = 0; i < 8; i++) {
+    uint16 tile = i < filled ? full : empty;
+    dst[HUDXY(4 + i, y)] = tile;
+    dst[HUDXY(4 + i, y + 1)] = tile | 0x8000;
+  }
 }
 
 static void Hud_Update_Magic() {  // 8dfc09
+  if (Hud_IsHorizontalMagicBar()) {
+    Hud_Update_HorizontalMagic();
+    return;
+  }
+
   uint16 *dst = &hud_tile_indices_buffer[HUDXY(2, 0)];
   if (link_magic_consumption >= 1) {
     dst[HUDXY(0, 0)] = 0x28F7;
@@ -1412,20 +1921,31 @@ static void Hud_Update_Inventory() {  // 8dfc09
   };
 
   int inv_offs = (d[0] == 0x90) ? 1 : 0;
+  if (EmuSeedRomActive())
+    inv_offs = 0;  // JP/z3r always shows four rupee digits
 
   static const uint16 kHudInventoryBg[26] = {
     0x207f, 0x207f, 0x3ca8, 0x207f, 0x207f, 0x2c88, 0x2c89, 0x207f, 0x20a7, 0x20a9, 0x207f, 0x2871, 0x207f,
     0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f,
   };
 
-  uint16 *dst = &hud_tile_indices_buffer[HUDXY(8, 0)];
-  memcpy(dst + HUDXY(0, 0), kHudInventoryBg +  0 + inv_offs, 12 * sizeof(uint16));
-  memcpy(dst + HUDXY(0, 1), kHudInventoryBg + 13 + inv_offs, 12 * sizeof(uint16));
+  int inv_x = Hud_IsReduxHud() ? 14 : 8;
+  uint16 *dst = &hud_tile_indices_buffer[HUDXY(inv_x, 0)];
+  if (EmuSeedRomActive() && inv_x == 8) {
+    // JP/z3r RebuildHUD uses its own 165-word tilemap at $A1:86B0.
+    for (int i = 0; i < 12; i++) {
+      dst[HUDXY(i, 0)] = SeedOracle_JpHudTile(8 + i);
+      dst[HUDXY(i, 1)] = SeedOracle_JpHudTile(32 + 8 + i);
+    }
+  } else {
+    memcpy(dst + HUDXY(0, 0), kHudInventoryBg +  0 + inv_offs, 12 * sizeof(uint16));
+    memcpy(dst + HUDXY(0, 1), kHudInventoryBg + 13 + inv_offs, 12 * sizeof(uint16));
+  }
 
   if (link_item_bow) {
     if (link_item_bow >= 3) {
-      hud_tile_indices_buffer[HUDXY(15, 0)] = 0x2486;
-      hud_tile_indices_buffer[HUDXY(16, 0)] = 0x2487;
+      hud_tile_indices_buffer[HUDXY(inv_x + 7, 0)] = 0x2486;
+      hud_tile_indices_buffer[HUDXY(inv_x + 8, 0)] = 0x2487;
       link_item_bow = link_num_arrows ? 4 : 3;
     } else {
       link_item_bow = link_num_arrows ? 2 : 1;
@@ -1443,12 +1963,12 @@ static void Hud_Update_Inventory() {  // 8dfc09
   dst[HUDXY(2, 1)] = base_tile | d[3];
 
   Hud_IntToDecimal(link_item_bombs, d);
-  base_tile = base_tiles[link_item_bombs == kMaxBombsForLevel[link_bomb_upgrades]];
+  base_tile = base_tiles[link_item_bombs == ModHooks_MaxBombsForLevel(link_bomb_upgrades)];
   dst[HUDXY(4, 1)] = base_tile | d[2];
   dst[HUDXY(5, 1)] = base_tile | d[3];
 
   Hud_IntToDecimal(link_num_arrows, d);
-  base_tile = base_tiles[link_num_arrows == kMaxArrowsForLevel[link_arrow_upgrades]];
+  base_tile = base_tiles[link_num_arrows == ModHooks_MaxArrowsForLevel(link_arrow_upgrades)];
   dst[HUDXY(7, 1)] = base_tile | d[2];
   dst[HUDXY(8, 1)] = base_tile | d[3];
 
@@ -1457,11 +1977,18 @@ static void Hud_Update_Inventory() {  // 8dfc09
   if (link_num_keys != 0xff)
     Hud_IntToDecimal(link_num_keys, d);
   dst[HUDXY(10, 1)] = 0x2400 | d[3];
-  if (dst[HUDXY(10, 1)] == 0x247f)
-    dst[HUDXY(10, 0)] = 0x247f;
+  if (dst[HUDXY(10, 1)] == 0x247f) {
+    if (EmuSeedRomActive()) {
+      dst[HUDXY(10, 1)] = 0x207f;
+      dst[HUDXY(10, 0)] = 0x207f;
+    } else {
+      dst[HUDXY(10, 0)] = 0x247f;
+    }
+  }
 }
 
 void Hud_Rebuild() {  // 8dfa70
+  ModItems_BeginHudIcons();
   // Ensure all of the 165 hud words are initialized.
   // This was broken by my previous reorg... quick fix for now.
   if (hud_tile_indices_buffer[HUDXY(8, 2)] == 0) {
@@ -1479,16 +2006,31 @@ void Hud_Rebuild() {  // 8dfa70
     0x207f, 0x207f, 0x2854, 0x305e, 0x6854, 0x207f, 0x207f, 0x207f,
     0x207f, 0x207f, 0xa850, 0x2856, 0xe850, 
   };
-  DrawHudComponents(hud_tile_indices_buffer, kHudTilemapLeftPart, 8, 6);
+  if (Hud_IsReduxHud()) {
+    Hud_BuildReduxBackground(hud_tile_indices_buffer);
+    // The old static tilemap had a sixth row for the vertical magic meter.
+    for (int i = 5 * 32; i < 5 * 32 + 5; i++)
+      hud_tile_indices_buffer[i] = 0x207F;
+  } else {
+    DrawHudComponents(hud_tile_indices_buffer, kHudTilemapLeftPart, 8, 6);
 
-  static const uint16 kHudTilemapRightPart[12 * 5] = {
-    0x207f, 0x207f, 0x288b, 0x288f, 0x24ab, 0x24ac, 0x688f, 0x688b, 0x207f, 0x207f, 0x207f, 0x207f,
-    0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f,
-    0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f,
-    0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f,
-    0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f,
-  };
-  DrawHudComponents(&hud_tile_indices_buffer[HUDXY(20, 0)], kHudTilemapRightPart, 12, 5);
+    if (Hud_IsHorizontalMagicBar()) {
+      // Erase the original vertical meter before drawing the horizontal bar
+      // over the free area below the item box.
+      for (int y = 0; y <= 5; y++)
+        for (int x = 2; x <= 4; x++)
+          hud_tile_indices_buffer[HUDXY(x, y)] = 0x207F;
+    }
+
+    static const uint16 kHudTilemapRightPart[12 * 5] = {
+      0x207f, 0x207f, 0x288b, 0x288f, 0x24ab, 0x24ac, 0x688f, 0x688b, 0x207f, 0x207f, 0x207f, 0x207f,
+      0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f,
+      0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f,
+      0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f,
+      0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f,
+    };
+    DrawHudComponents(&hud_tile_indices_buffer[HUDXY(20, 0)], kHudTilemapRightPart, 12, 5);
+  }
 
 
   Hud_Update_Hearts();
@@ -1517,7 +2059,7 @@ void Hud_HandleItemSwitchInputs() {
     return;
 
   uint8 item = hud_cur_item;
-  for (int i = 0; i < kHudItemCount; i++) {
+  for (int i = 0; i < Hud_NavCount(); i++) {
     if (!direction)
       Hud_GotoPrevItem(&item, 1);
     else
@@ -1536,6 +2078,9 @@ void Hud_HandleItemSwitchInputs() {
 }
 
 static void Hud_ReorderItem(int direction) {
+  // Custom items are not part of the 24-entry vanilla order array.
+  if (Hud_IsCustomHudSlot(hud_cur_item))
+    return;
   // Initialize inventory order on first use
   if (hud_inventory_order[0] == 0) {
     for (int i = 0; i < 24; i++)
@@ -1543,9 +2088,9 @@ static void Hud_ReorderItem(int direction) {
   }
   int old_pos = Hud_GetItemPosition(hud_cur_item), new_pos = old_pos + direction;
   if (new_pos < 0)
-    new_pos += kHudItemCount;
-  else if (new_pos >= kHudItemCount)
-    new_pos -= kHudItemCount;
+    new_pos += Hud_ItemCount();
+  else if (new_pos >= Hud_ItemCount())
+    new_pos -= Hud_ItemCount();
   uint8 t = hud_inventory_order[old_pos];
   hud_inventory_order[old_pos] = hud_inventory_order[new_pos];
   hud_inventory_order[new_pos] = t;

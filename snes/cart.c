@@ -25,6 +25,8 @@ Cart* cart_init(Snes* snes) {
 }
 
 void cart_free(Cart* cart) {
+  free(cart->rom);
+  free(cart->ram);
   free(cart);
 }
 
@@ -41,9 +43,18 @@ void cart_load(Cart* cart, int type, uint8_t* rom, int romSize, int ramSize) {
   if(cart->rom != NULL) free(cart->rom);
   cart->rom = (uint8_t*)malloc(romSize);
   cart->romSize = romSize;
-  assert(ramSize == cart->ramSize);
+  // z3randomizer seed ROMs advertise a larger SRAM size (32 KB) than the
+  // original game.  Grow the buffer as the header asks; normal ROMs keep
+  // their original 8 KB.
+  if (ramSize != cart->ramSize) {
+    uint8_t *newRam = (uint8_t*)malloc(ramSize > 0 ? ramSize : 1);
+    if (newRam == NULL)
+      abort();
+    free(cart->ram);
+    cart->ram = newRam;
+    cart->ramSize = ramSize;
+  }
   memset(cart->ram, 0, ramSize);
-  cart->ramSize = ramSize;
   memcpy(cart->rom, rom, romSize);
 }
 

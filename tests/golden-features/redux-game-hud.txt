@@ -1,0 +1,4 @@
+compare: off
+ev 9 SpriteSpawn 15 168 0
+ev 22 SpriteSpawn 14 168 0
+final 30 c33e08af

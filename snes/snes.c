@@ -30,12 +30,13 @@ Snes* snes_init(uint8_t *ram) {
   snes->cpu = cpu_init(snes, 0);
   snes->apu = apu_init();
   snes->dma = dma_init(snes);
-  snes->ppu = ppu_init();
+  snes->ppu = ppu_init(snes);
   snes->cart = cart_init(snes);
   snes->input1 = input_init(snes);
   snes->input2 = input_init(snes);
   snes->debug_cycles = false;
   snes->disableHpos = false;
+  snes->apu_port_echo = false;
   return snes;
 }
 
@@ -148,7 +149,10 @@ uint8_t snes_readBBus(Snes* snes, uint8_t adr) {
     return ppu_read(snes->ppu, adr);
   }
   if(adr < 0x80) {
-    //apu_cycle(snes->apu);//spc_runOpcode(snes->apu->spc);
+    // Advance the APU when the CPU polls a port, otherwise a busy-wait on
+    // $2140 never gives the SPC a chance to answer.  In the native path the
+    // APU is not cycled, so this is a no-op there.
+    snes_catchupApu(snes);
     return snes->apu->outPorts[adr & 0x3];
   }
   if(adr == 0x80) {
@@ -167,6 +171,8 @@ void snes_writeBBus(Snes* snes, uint8_t adr, uint8_t val) {
   if(adr < 0x80) {
     snes_catchupApu(snes); // catch up the apu before writing
     snes->apu->inPorts[adr & 0x3] = val;
+    if (snes->apu_port_echo)
+      snes->apu->outPorts[adr & 0x3] = val;
     return;
   }
   switch(adr) {

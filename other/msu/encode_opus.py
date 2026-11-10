@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
 import concurrent.futures
+import ctypes
 import opuslib
 import struct
 import samplerate # pip install samplerate
 import numpy as np
+
+# opus_encoder_ctl is variadic. Declare its fixed arguments so ctypes uses the
+# variadic calling convention on Apple Silicon; otherwise the value argument is
+# passed in a register and libopus reads garbage (rejecting e.g. the bitrate).
+# See https://github.com/python/cpython/issues/114810.
+opuslib.api.encoder.libopus_ctl.argtypes = (
+    opuslib.api.encoder.EncoderPointer, ctypes.c_int)
 
 # File format
 # 4 byte: OPUZ

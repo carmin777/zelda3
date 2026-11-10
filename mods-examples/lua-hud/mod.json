@@ -1,0 +1,9 @@
+{
+  "id": "lua-hud",
+  "name": "HUD de exemplo com zelda.draw",
+  "version": "1.0.0",
+  "api": 1,
+  "enabled": true,
+  "priority": 0,
+  "script": "main.lua"
+}

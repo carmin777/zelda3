@@ -8,6 +8,7 @@ import compile_music
 import array, hashlib, struct
 from util import cache
 import sprite_sheets
+import overworld_tables
 import argparse
 import os
 
@@ -152,7 +153,7 @@ def print_misc(args):
 
   add_asset_uint16('kPredefinedTileData', ROM.get_words(0x9B52, 6438))
 
-  add_asset_uint16('kMap16ToMap8', ROM.get_words(0x8f8000, 3752 * 4))
+  add_asset_uint16('kMap16ToMap8', ROM.get_words(overworld_tables.map16_to_map8(), 3752 * 4))
 
   add_asset_uint8('kGeneratedWishPondItem', ROM.get_bytes(0x888450, 256))
   add_asset_uint8('kGeneratedBombosArr', ROM.get_bytes(0x8890FC, 256))
@@ -189,22 +190,25 @@ def load_overworld_yaml(room):
   return yaml.safe_load(open('overworld/overworld-%d.yaml' % room, 'r'))
     
 def print_overworld():
+  hi_table = overworld_tables.hibytes_comp()
   r = []
   for i in range(160):
-    addr = ROM.get_24(0x82F94D + i * 3)
+    addr = ROM.get_24(hi_table + i * 3)
     decomp, comp_len = util.decomp(addr, ROM.get_byte, True, True)
     r.append(bytes(ROM.get_bytes(addr, comp_len)))
   add_asset_packed('kOverworld_Hibytes_Comp', r)
 
+  lo_table = overworld_tables.lobytes_comp()
   r = []
   for i in range(160):
-    addr = ROM.get_24(0x82FB2D + i * 3)
+    addr = ROM.get_24(lo_table + i * 3)
     decomp, comp_len = util.decomp(addr, ROM.get_byte, True, True)
     r.append(bytes(ROM.get_bytes(addr, comp_len)))
   add_asset_packed('kOverworld_Lobytes_Comp', r)
 
 def is_area_head(i):
-  return i >= 128 or ROM.get_byte(0x82A5EC + (i & 63)) == (i & 63)
+  heads = ROM.get_bytes(overworld_tables.area_heads(), 64)
+  return i >= 128 or heads[i & 63] == (i & 63)
 
 class OutArrays:
   def __init__(self):
@@ -271,10 +275,10 @@ def print_overworld_tables():
   for a in ['kBirdTravel_ScreenIndex', 'kBirdTravel_Map16LoadSrcOff', 'kBirdTravel_ScrollX',
             'kBirdTravel_ScrollY', 'kBirdTravel_LinkXCoord', 'kBirdTravel_LinkYCoord',
             'kBirdTravel_CameraXScroll', 'kBirdTravel_CameraYScroll']:
-    A.add('uint16', a, 17)
-  A.add('int8', 'kBirdTravel_Unk1', 17)
-  A.add('int8', 'kBirdTravel_Unk3', 17)
-  A.add('uint16', 'kWhirlpoolAreas', 8)
+    A.add('uint16', a, 17, initializer = 0xffff)
+  A.add('int8', 'kBirdTravel_Unk1', 17, initializer = 0)
+  A.add('int8', 'kBirdTravel_Unk3', 17, initializer = 0)
+  A.add('uint16', 'kWhirlpoolAreas', 8, initializer = 0xffff)
 
   next_whirlpool_id = 0
   for i, y in loaded_areas:
@@ -297,21 +301,21 @@ def print_overworld_tables():
       A.kBirdTravel_Unk1[j] = t['unk'][0]
       A.kBirdTravel_Unk3[j] = t['unk'][1]
 
-  A.add('uint16', 'kOverworld_Entrance_Area', 129)
-  A.add('uint16', 'kOverworld_Entrance_Pos', 129)
-  A.add('uint8', 'kOverworld_Entrance_Id', 129)
+  A.add('uint16', 'kOverworld_Entrance_Area', 129, initializer = 0xffff)
+  A.add('uint16', 'kOverworld_Entrance_Pos', 129, initializer = 0xffff)
+  A.add('uint8', 'kOverworld_Entrance_Id', 129, initializer = 0xff)
 
   for i, y in loaded_areas:
     for e in y['Entrances']:
       j = e['index']
-      assert A.kOverworld_Entrance_Id[j] == None
+      assert A.kOverworld_Entrance_Id[j] == 0xff
       A.kOverworld_Entrance_Area[j] = i
       A.kOverworld_Entrance_Id[j] = e['entrance_id']
       A.kOverworld_Entrance_Pos[j] = e['x'] << 1 | e['y'] << 7
 
-  A.add('uint16', 'kFallHole_Area', 19)
-  A.add('uint16', 'kFallHole_Pos', 19)
-  A.add('uint8', 'kFallHole_Entrances', 19)
+  A.add('uint16', 'kFallHole_Area', 19, initializer = 0xffff)
+  A.add('uint16', 'kFallHole_Pos', 19, initializer = 0xffff)
+  A.add('uint8', 'kFallHole_Entrances', 19, initializer = 0xff)
       
   holes = []
   for i, y in loaded_areas:
@@ -324,15 +328,15 @@ def print_overworld_tables():
     A.kFallHole_Pos[i] = pos
     A.kFallHole_Entrances[i] = entrance
 
-  A.add('uint8', 'kExitData_ScreenIndex', 79)
+  A.add('uint8', 'kExitData_ScreenIndex', 79, initializer = 0xff)
   for a in ['kExitDataRooms', 'kExitData_Map16LoadSrcOff', 'kExitData_ScrollX',
             'kExitData_ScrollY', 'kExitData_XCoord', 'kExitData_YCoord',
             'kExitData_CameraXScroll', 'kExitData_CameraYScroll']:
-    A.add('uint16', a, 79)
+    A.add('uint16', a, 79, initializer = 0xffff)
   A.add('uint16', 'kExitData_NormalDoor', 79, initializer = 0)
   A.add('uint16', 'kExitData_FancyDoor', 79, initializer = 0)
-  A.add('int8', 'kExitData_Unk1', 79)
-  A.add('int8', 'kExitData_Unk3', 79)
+  A.add('int8', 'kExitData_Unk1', 79, initializer = 0)
+  A.add('int8', 'kExitData_Unk3', 79, initializer = 0)
 
   A.add('uint16', 'kSpExit_Top', 16, initializer = 0)
   A.add('uint16', 'kSpExit_Bottom', 16, initializer = 0)
@@ -353,7 +357,7 @@ def print_overworld_tables():
     for e in y['Exits']:
       j = e['index']
       base_x, base_y = (i & 7) << 9, (i & 56) << 6
-      assert A.kExitData_ScreenIndex[j] == None
+      assert A.kExitData_ScreenIndex[j] == 0xff
       A.kExitData_ScreenIndex[j] = i
       room = e['room']
       A.kExitDataRooms[j] = e['room']
@@ -433,19 +437,44 @@ def print_overworld_tables():
   do_sprite_range(64, 144, 'Sprites', [1, 2], 3)
 
   A.write()
-  add_asset_uint8('kMap8DataToTileAttr', ROM.get_bytes(0x8E9459, 512))
-  add_asset_uint8('kSomeTileAttr', ROM.get_bytes(0x9bf110, 3824))
+  add_asset_uint8('kMap8DataToTileAttr', ROM.get_bytes(overworld_tables.map8_data_to_tile_attr(), 512))
+  add_asset_uint8('kSomeTileAttr', ROM.get_bytes(overworld_tables.some_tile_attr(), 3824))
 
+
+def read_dungeon_map_pointer_tables():
+  # DungeonMap_DrawSingleRowOfRooms ($8A:E5BC) loads the two 16-bit pointer
+  # tables with LDA $xxxx,X. Read the operands from the instructions instead
+  # of assuming the US addresses; A Link to the Islands moved the tile table.
+  floor1 = ROM.get_bytes(0x8AE5E2, 8)
+  floor2 = ROM.get_bytes(0x8AE624, 6)
+  tiles = ROM.get_bytes(0x8AE63F, 8)
+  if (floor1[0] != 0xbd or floor1[3:5] != bytes((0x85, 0x0c)) or
+      floor1[5] != 0xb9):
+    raise Exception('unrecognized dungeon map floor pointer load at $8A:E5E2')
+  if (floor2[0] != 0xbd or floor2[3:5] != bytes((0x85, 0x0c)) or
+      floor2[5] != 0xe2):
+    raise Exception('unrecognized dungeon map floor pointer load at $8A:E624')
+  if (tiles[0] != 0xbd or tiles[3:5] != bytes((0x85, 0x0c)) or
+      tiles[5] != 0xa5):
+    raise Exception('unrecognized dungeon map tile pointer load at $8A:E63F')
+  floor_addr = floor1[1] | floor1[2] << 8
+  if (floor2[1] | floor2[2] << 8) != floor_addr:
+    raise Exception('dungeon map floor pointer loads disagree')
+  tiles_addr = tiles[1] | tiles[2] << 8
+  if floor_addr + 28 > 0x10000 or tiles_addr + 28 > 0x10000:
+    raise Exception('dungeon map pointer table crosses a bank boundary')
+  return 0x8a0000 | floor_addr, 0x8a0000 | tiles_addr
 
 def print_dungeon_map():
   r, r2 = [], []
+  floor_table, tiles_table = read_dungeon_map_pointer_tables()
   for i in range(14):
     kSizes = [75, 125, 50, 75, 175, 75, 50, 75, 50, 200, 150, 75, 100, 200]
-    addr = 0xa0000 + ROM.get_word(0x8AF605 + i * 2)
+    addr = 0xa0000 + ROM.get_word(floor_table + i * 2)
     b = ROM.get_bytes(addr, kSizes[i])
     nonzero_bytes = len(b) - b.count(0xf)
     r.append(bytes(b))
-    addr = 0xa0000 + ROM.get_word(0x8AFBE4 + i * 2)
+    addr = 0xa0000 + ROM.get_word(tiles_table + i * 2)
     b = ROM.get_bytes(addr, nonzero_bytes)
     r2.append(bytes(b))
     
@@ -715,8 +744,31 @@ def print_enemy_damage_data():
   decomp, comp_len = util.decomp(0x83e800, ROM.get_byte, True, True)
   add_asset_uint8('kEnemyDamageData', decomp)
 
+NMI_TILEMAP_LOAD = 0x808bcf
+
+def read_tilemap_sources():
+  # NMI_DoUpdates (src/nmi.c, $80:89E0) loads a 24-bit pointer from three
+  # parallel byte tables indexed by nmi_load_bg_from_vram. Cases 3, 5, 6, 7,
+  # 8 and 9 are kBgTilemap_0..5. Read the table addresses from the routine
+  # operands so a ROM that moves either the tables or the tilemaps is
+  # followed. In the US ROM this yields the historical fixed sources.
+  b = ROM.get_bytes(NMI_TILEMAP_LOAD, 22)
+  if (b[0:5] != bytes((0xa4, 0x14, 0xf0, 0x20, 0xb9)) or
+      b[7] != 0x85 or b[8] != 0x00 or
+      b[9] != 0xb9 or b[12] != 0x85 or b[13] != 0x01 or
+      b[14] != 0xb9 or b[17] != 0x85 or b[18] != 0x02 or
+      b[19] != 0x20 or b[20] != 0xa1 or b[21] != 0x92):
+    raise Exception('cannot locate the NMI tilemap pointer tables')
+  low = b[5] | b[6] << 8
+  high = b[10] | b[11] << 8
+  bank = b[15] | b[16] << 8
+  lo = ROM.get_bytes(low, 10)
+  hi = ROM.get_bytes(high, 10)
+  ba = ROM.get_bytes(bank, 10)
+  return [(ba[i] << 16) | (hi[i] << 8) | lo[i] for i in (3, 5, 6, 7, 8, 9)]
+
 def print_tilemaps():
-  kSrcs = [0xcdd6d, 0xce7bf, 0xce2a8, 0xce63c, 0xce456, 0xeda9c]
+  kSrcs = read_tilemap_sources()
   def decode_one(p):
     p_org = p
     while not (ROM.get_byte(p) & 0x80):
@@ -755,18 +807,21 @@ def print_sound_banks():
 
 def print_all(args):
   print_sound_banks()
-  print_dungeon_rooms()
+  if not getattr(args, 'skip_dungeon_content', False):
+    print_dungeon_rooms()
   print_enemy_damage_data()
   print_link_graphics()
-  print_dungeon_sprites()
+  if not getattr(args, 'skip_dungeon_content', False):
+    print_dungeon_sprites()
   print_map32_to_map16()
   print_images(args)
   print_misc(args)
   print_dialogue(args)
   print_dungeon_map()
   print_tilemaps()
-  print_overworld()
-  print_overworld_tables()
+  if not getattr(args, 'skip_overworld_content', False):
+    print_overworld()
+    print_overworld_tables()
 
 def write_assets_to_file(print_header = False):
   key_sig = b''

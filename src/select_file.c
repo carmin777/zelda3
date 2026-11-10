@@ -6,11 +6,12 @@
 #include "overworld.h"
 #include "messaging.h"
 #include "sprite.h"
+#include "mod/events.h"
+#include "mod/lua_save.h"
+#include "mod/seed_import.h"
+#include "mod/seed_oracle.h"
+#include "zelda_cpu_infra.h"
 
-#define selectfile_R16 g_ram[0xc8]
-#define selectfile_R17 g_ram[0xc9]
-#define selectfile_R18 WORD(g_ram[0xca])
-#define selectfile_R20 WORD(g_ram[0xcc])
 static const uint8 kSelectFile_Draw_Y[3] = {0x43, 0x63, 0x83};
 bool Intro_CheckCksum(const uint8 *s) {
   const uint16 *src = (const uint16 *)s;
@@ -23,7 +24,7 @@ bool Intro_CheckCksum(const uint8 *s) {
 
 uint16 *SelectFile_Func1() {
   static const uint16 kSelectFile_Func1_Tab[4] = {0x3581, 0x3582, 0x3591, 0x3592};
-  uint16 *dst = (uint16 *)&g_ram[0x1002];
+  uint16 *dst = vram_upload_data;
   *dst++ = 0x10;
   *dst++ = 0xff07;
   for (int i = 0; i < 1024; i++)
@@ -163,16 +164,22 @@ void Intro_FixCksum(uint8 *s) {
 }
 
 void LoadFileSelectGraphics() {  // 80e4e9
-  Decomp_spr(&g_ram[0x14000], 0x5e);
-  Do3To4High(&g_zenv.vram[0x5000], &g_ram[0x14000]);
+  if (EmuSeedRomActive()) {
+    // JP 1.0 version: $80:E529. The z3randomizer hooks at $80:E55D,
+    // $80:E568 and $80:E581 are part of the C reimplementation.
+    SeedOracle_JpLoadFileSelectGraphics();
+    return;
+  }
+  Decomp_spr(decomp_buffer, 0x5e);
+  Do3To4High(&g_zenv.vram[0x5000], decomp_buffer);
 
-  Decomp_spr(&g_ram[0x14000], 0x5f);
-  Do3To4High(&g_zenv.vram[0x5400], &g_ram[0x14000]);
+  Decomp_spr(decomp_buffer, 0x5f);
+  Do3To4High(&g_zenv.vram[0x5400], decomp_buffer);
 
   TransferFontToVRAM();
 
-  Decomp_spr(&g_ram[0x14000], 0x6b);
-  memcpy(&g_zenv.vram[0x7800], &g_ram[0x14000], 0x300 * sizeof(uint16));
+  Decomp_spr(decomp_buffer, 0x6b);
+  memcpy(&g_zenv.vram[0x7800], decomp_buffer, 0x300 * sizeof(uint16));
 }
 
 void Intro_ValidateSram() {  // 828054
@@ -188,12 +195,39 @@ void Intro_ValidateSram() {  // 828054
       }
     }
   }
-  memset(&g_ram[0xd00], 0, 256 * 3);
+  memset(sprite_y_lo, 0, 256 * 3);
 }
 
 void Module01_FileSelect() {  // 8ccd7d
   BG3HOFS_copy2 = 0;
   BG3VOFS_copy2 = 0;
+  if (EmuSeedRomActive()) {
+    if (submodule_index == 2) {
+      // JP $8C:CDAE: arm the z3r stripe upload, then advance.
+      g_ram[0xC8] = selectfile_var2;
+      submodule_index++;
+      nmi_load_bg_from_vram = 6;
+      return;
+    }
+    if (submodule_index == 3) {
+      // JP $8C:CDBA: build the JP stripes, turn the screen on, and run the
+      // z3r tilemap/DMA hooks from $A4:879D.
+      SeedOracle_JpFileSelectNameStripes();
+      INIDISP_copy = 0x0F;
+      nmi_disable_core_updates = 0;
+      selectfile_R16 = selectfile_var2;
+      submodule_index++;
+      SeedOracle_JpFileSelectTilemap();
+      SeedOracle_JpFileSelectDma();
+      return;
+    }
+    if (submodule_index == 4) {
+      // JP $8C:CDC6 jumps straight to FileSelect_Main; there is no US
+      // TriggerNameStripes step.
+      FileSelect_Main();
+      return;
+    }
+  }
   switch (submodule_index) {
   case 0: Module_SelectFile_0(); break;
   case 1: FileSelect_ReInitSaveFlagsAndEraseTriforce(); break;
@@ -211,21 +245,36 @@ void Module_SelectFile_0() {  // 8ccd9d
   music_control = 11;
   submodule_index++;
   overworld_palette_aux_or_main = 0x200;
-  palette_main_indoors = 6;
-  nmi_disable_core_updates = 6;
+  // JP $8C:CC89 leaves nmi_disable_core_updates and palette_main_indoors
+  // alone (both carry the intro values) and uses hud_palette 1.
+  if (!EmuSeedRomActive()) {
+    palette_main_indoors = 6;
+    nmi_disable_core_updates = 6;
+  }
   Palette_Load_DungeonSet();
   Palette_Load_OWBG3();
-  hud_palette = 0;
+  hud_palette = EmuSeedRomActive() ? 1 : 0;
   Palette_Load_HUD();
   hud_cur_item = 0;
   misc_sprites_graphics_index = 1;
   main_tile_theme_index = 35;
   aux_tile_theme_index = 81;
-  LoadDefaultGraphics();
-  InitializeTilesets();
-  LoadFileSelectGraphics();
-  Intro_ValidateSram();
-  DecompressEnemyDamageSubclasses();
+  if (EmuSeedRomActive()) {
+    SeedOracle_JpLoadDefaultGraphics();
+    SeedOracle_JpInitializeTilesets();
+  } else {
+    LoadDefaultGraphics();
+    InitializeTilesets();
+  }
+  if (EmuSeedRomActive()) {
+    // The JP hook at $A4:B1CD does not rebuild the enemy damage table here.
+    LoadFileSelectGraphics();
+    Intro_ValidateSram();
+  } else {
+    LoadFileSelectGraphics();
+    Intro_ValidateSram();
+    DecompressEnemyDamageSubclasses();
+  }
 }
 
 void FileSelect_ReInitSaveFlagsAndEraseTriforce() {  // 8ccdf2
@@ -237,7 +286,7 @@ void FileSelect_EraseTriforce() {  // 8ccdf9
   nmi_disable_core_updates = 128;
   EnableForceBlank();
   EraseTileMaps_triforce();
-  Palette_LoadForFileSelect();
+  SeedOracle_FileSelectPalette();
   flag_update_cgram_in_nmi++;
   submodule_index++;
 }
@@ -310,21 +359,34 @@ void FileSelect_Main() {  // 8ccebd
   static const uint8 kSelectFile_Faerie_Y[5] = {0x4a, 0x6a, 0x8a, 0xaf, 0xbf};
 
   const uint8 *cart = g_zenv.sram;
+  bool any_used = false;
 
   if (selectfile_R16 < 3)
     selectfile_var2 = selectfile_R16;
 
   for (int k = 0; k < 3; k++) {
-    if (*(uint16 *)(cart + k * 0x500 + 0x3E5) == 0x55AA) {
+    if (*(uint16 *)(cart + k * 0x500 +
+                    (EmuSeedRomActive() ? 0x3E1 : 0x3E5)) == 0x55AA) {
       selectfile_arr1[k] = 1;
-      SelectFile_Func5_DrawOams(k);
-      SelectFile_Func6_DrawOams2(k);
-      SelectFile_Func17(k);
+      any_used = true;
+      if (EmuSeedRomActive()) {
+        SeedOracle_JpFileSelectDrawFile(k);
+      } else {
+        SelectFile_Func5_DrawOams(k);
+        SelectFile_Func6_DrawOams2(k);
+        SelectFile_Func17(k);
+      }
     }
   }
 
-  FileSelect_DrawFairy(0x1c, kSelectFile_Faerie_Y[selectfile_R16]);
-  nmi_load_bg_from_vram = 1;
+  if (EmuSeedRomActive()) {
+    // JP $8C:CDC6 -> $CDE5/$CF91: the z3r DrawPlayerFile card.
+    FileSelect_DrawFairy(0x14, 0x42);
+    nmi_load_bg_from_vram = any_used;
+  } else {
+    FileSelect_DrawFairy(0x1c, kSelectFile_Faerie_Y[selectfile_R16]);
+    nmi_load_bg_from_vram = 1;
+  }
 
   uint8 a = (filtered_joypad_L & 0xc0 | filtered_joypad_H) & 0xfc;
   if (a & 0x2c) {
@@ -348,7 +410,7 @@ void FileSelect_Main() {  // 8ccebd
       } else {
         music_control = 0xf1;
         srm_var1 = selectfile_R16 * 2 + 2;
-        WORD(g_ram[0]) = selectfile_R16 * 0x500;
+        R0 = selectfile_R16 * 0x500;
         CopySaveToWRAM();
       }
     } else if (selectfile_arr1[0] | selectfile_arr1[1] | selectfile_arr1[2]) {
@@ -726,6 +788,23 @@ void FileSelect_DrawFairy(uint8 x, uint8 y) {  // 8cd7a5
 }
 
 void Module04_NameFile() {  // 8cd88a
+  if (EmuSeedRomActive()) {
+    // JP $8C:D755 has one setup step and then the naming loop; the US
+    // Module_NamePlayer_1/2 uploads are not used.
+    switch (submodule_index) {
+    case 0: NameFile_EraseSave(); return;
+    case 1:
+      if (SeedOracle_JpMaybeForceFileName())
+        return;
+      nmi_load_bg_from_vram = 5;
+      submodule_index++;
+      INIDISP_copy = 0x0F;
+      nmi_disable_core_updates = 0;
+      return;
+    case 2: SeedOracle_JpNameFile(); return;
+    }
+    return;
+  }
   switch (submodule_index) {
   case 0: NameFile_EraseSave(); break;
   case 1: Module_NamePlayer_1(); break;
@@ -742,14 +821,23 @@ void NameFile_EraseSave() {  // 8cd89c
   selectfile_var5 = 0;
   selectfile_arr2[0] = 0;
   selectfile_var6 = 0;
-  selectfile_var7 = 0x83;
-  selectfile_var8 = 0x1f0;
+  bool seed = EmuSeedRomActive();
+  selectfile_var7 = seed ? 0x3E : 0x83;
+  selectfile_var8 = seed ? 0x019C : 0x1f0;
   BG3HOFS_copy2 = 0;
   int offs = selectfile_R16 * 0x500;
   attract_legend_ctr = offs;
   memset(g_zenv.sram + offs, 0, 0x500);
   uint16 *name = (uint16 *)(g_zenv.sram + offs + kSrmOffs_Name);
-  name[0] = name[1] = name[2] = name[3] = name[4] = name[5] = 0xa9;
+  if (seed) {
+    // $A4:984F writes $018C to $700500..$700516 and name[0]; the JP stores
+    // then fill name[1..3], leaving name[4..5] zero.
+    for (int i = 0; i < 12; i++)
+      *(uint16 *)(g_zenv.sram + 0x500 + i * 2) = 0x018C;
+    name[0] = name[1] = name[2] = name[3] = 0x018C;
+  } else {
+    name[0] = name[1] = name[2] = name[3] = name[4] = name[5] = 0xa9;
+  }
 }
 
 void NameFile_DoTheNaming() {  // 8cda4d
@@ -855,6 +943,7 @@ void NameFile_DoTheNaming() {  // 8cda4d
   }
   srm_var1 = selectfile_R16 * 2 + 2;
   uint8 *sram = &g_zenv.sram[selectfile_R16 * 0x500];
+  bool seed_save = ModSeedImport_InitNewSave(sram, 0x500);
   WORD(sram[0x3e5]) = 0x55aa;
   WORD(sram[0x20c]) = 0xf000;
   WORD(sram[0x20e]) = 0xf000;
@@ -865,9 +954,16 @@ void NameFile_DoTheNaming() {  // 8cda4d
     0, 0, 0, 0, 0, 0, 0, 0, 0,    0, 0, 0, 0x18, 0x18, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0xf8, 0, 0,
   };
-  memcpy(sram + 0x340, kSramInit_Normal, 60);
+  if (!seed_save)
+    memcpy(sram + 0x340, kSramInit_Normal, 60);
   Intro_FixCksum(sram);
   ZeldaWriteSram();
+  // New file fully written. InitializeSaveFile is the same creation path the
+  // z3r OnFileCreation hook replaces ($8C:DB4C in the JP ROM).
+  int created_slot = selectfile_R16;
+  LuaSave_ResetSlot(created_slot);
+  MOD_EMIT(kModEv_FileCreate, created_slot, 0, 0);
+  LuaSave_WriteSlot(created_slot);
   ReturnToFileSelect();
   irq_flag = 0xff;
   sound_effect_1 = 0x2c;

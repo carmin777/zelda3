@@ -26,6 +26,9 @@ struct Snes {
   // input
   bool debug_cycles;
   bool disableHpos;
+  // Seed oracle only: the SPC program is not uploaded in this mode, so echo
+  // port writes back to the CPU to let the ROM handshakes complete.
+  bool apu_port_echo;
   Input* input1;
   Input* input2;
   
@@ -84,6 +87,11 @@ void snes_doAutoJoypad(Snes *snes);
 
 bool snes_loadRom(Snes* snes, uint8_t* data, int length);
 void snes_saveload(Snes *snes, SaveLoadFunc *func, void *ctx);
+// Run a complete emulated frame (CPU, PPU, DMA, APU). Only the --emu-rom
+// diagnostic path uses this; the normal game runs through zelda_cpu_infra.c.
+void snes_runFrame(Snes *snes);
+// Reset the console without clearing battery-backed cart SRAM.
+void snes_softResetPreserveSram(Snes *snes);
 
 
 #endif

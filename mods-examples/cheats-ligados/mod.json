@@ -1,0 +1,8 @@
+{
+  "id": "cheats-ligados",
+  "name": "Cheats do zelda3 ligados (#295)",
+  "version": "1.0.0",
+  "api": 1,
+  "permissions": ["state_write"],
+  "script": "main.lua"
+}

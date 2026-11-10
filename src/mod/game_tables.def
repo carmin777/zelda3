@@ -1,0 +1,29 @@
+// Game tables that a mod may replace through "table_overrides".
+//
+// MOD_TABLE(symbol, word_count, snes_address)
+// MOD_TABLE_BYTES(symbol, byte_count, snes_address)
+// MOD_TABLE_DERIVED(symbol, byte_count)
+//
+// The entries below are HUD/item-menu tilemap tables and the game-over letter
+// layout. tools/modkit.py parses this file directly so the Python side never
+// duplicates the registry. Keep it in sync with the arrays in src/hud.c,
+// src/mod/game_over_text.c and other/names.txt.
+//
+// MOD_TABLE reads a uint16 array at a fixed SNES address in the US ROM.
+// MOD_TABLE_BYTES reads a uint8 array at a fixed address. MOD_TABLE_DERIVED
+// exposes a byte table that import-rom builds by decoding the translated
+// ROM's code instead of reading a fixed address.
+MOD_TABLE(kHudEquipmentDungeonItemText, 16, 0x8DED09)
+MOD_TABLE(kHudItemText, 320, 0x8DF1C9)
+MOD_TABLE(kHudBottlesItemText, 128, 0x8DF449)
+MOD_TABLE(kHudMushroomItemText, 16, 0x8DF549)
+MOD_TABLE(kHudFluteItemText, 32, 0x8DF569)
+MOD_TABLE(kHudMirrorItemText, 16, 0x8DF5A9)
+MOD_TABLE(kHudBowItemText, 48, 0x8DF5C9)
+MOD_TABLE(kHudGlovesText, 20, 0x8DF931)
+MOD_TABLE(kHudAbilityText, 80, 0x8DF959)
+MOD_TABLE_DERIVED(kGameOverTextLetterCount, 1)
+MOD_TABLE_DERIVED(kGameOverTextTab1, 10)
+MOD_TABLE_DERIVED(kGameOverTextTab2, 10)
+MOD_TABLE_DERIVED(kGameOverTextTiles, 40)
+MOD_TABLE_BYTES(kOverworldAreaHeads, 64, 0x82A5EC)

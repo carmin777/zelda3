@@ -1,0 +1,6 @@
+compare: off
+ev 152 CameraSplit 1 209 33
+ev 212 SpriteSpawn 2 87 0
+ev 305 LinkDamage 8 40 0
+ev 367 CameraSplit 0 143 90
+final 550 de487f3e

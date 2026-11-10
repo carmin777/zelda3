@@ -6,6 +6,10 @@ void NMI_UploadSubscreenOverlayLatter();
 void Interrupt_NMI(uint16 joypad_input);
 void NMI_ReadJoypads(uint16 joypad_input);
 void NMI_DoUpdates();
+// Copy the per-frame Link CHR slices into a shadow array instead of VRAM.
+// Used by SharedWorld for player 2, whose RAM is swapped into g_ram when this
+// is called. dst covers VRAM word 0x4000..0x43ff (linkChr in Ppu).
+void NMI_LoadPlayer2LinkChr(uint16 *dst);
 void NMI_UploadTilemap();
 void NMI_UploadTilemap_doNothing();
 void NMI_UploadBG3Text();

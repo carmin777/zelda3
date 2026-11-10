@@ -51,6 +51,7 @@ void InitializeTilesets();
 void LoadDefaultGraphics();
 void Attract_LoadBG3GFX();
 void Graphics_LoadChrHalfSlot();
+void LoadHudMenuGraphics();
 void TransferFontToVRAM();
 void Do3To4High(uint16 *vram_ptr, const uint8 *decomp_addr);
 void Do3To4Low(uint16 *vram_ptr, const uint8 *decomp_addr);

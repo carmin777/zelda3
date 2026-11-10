@@ -14,11 +14,12 @@
 #include "ancilla.h"
 #include "hud.h"
 #include "assets.h"
+#include "mod/ending_credits.h"
+#include "mod/seed_oracle.h"
+#include "zelda_cpu_infra.h"
 
 static const uint16 kPolyhedralPalette[8] = { 0, 0x14d, 0x1b0, 0x1f3, 0x256, 0x279, 0x2fd, 0x35f };
 
-#define ending_which_dung (*(uint16*)(g_ram+0xcc))
-#define kPolyThreadRam (g_ram + 0x1f00)
 static const int8 kIntroSprite0_Xvel[3] = { 1, 0, -1 };
 static const int8 kIntroSprite0_Yvel[3] = { -1, 1, -1 };
 static const uint8 kIntroSprite3_X[4] = { 0xc2, 0x98, 0x6f, 0x34 };
@@ -116,12 +117,6 @@ static PlayerHandlerFunc *const kEndSequence_Funcs[39] = {
 &Credits_FadeInTheEnd,
 &Credits_HangForever,
 };
-#define intro_sword_ypos WORD(g_ram[0xc8])
-#define intro_sword_18 g_ram[0xca]
-#define intro_sword_19 g_ram[0xcb]
-#define intro_sword_20 g_ram[0xcc]
-#define intro_sword_21 g_ram[0xcd]
-#define intro_sword_24 g_ram[0xd0]
 static const uint16 kEnding_Tab1[16] = {
   0x1000, 2, 0x1002, 0x1012, 0x1004, 0x1006, 0x1010, 0x1014, 0x100a,
   0x1016, 0x5d, 0x64, 0x100e, 0x1008, 0x1018, 0x180 };
@@ -155,8 +150,13 @@ void Intro_SetupScreen() {  // 828000
 }
 
 void Intro_LoadTextPointersAndPalettes() {  // 828116
-  Text_GenerateMessagePointers();
-  Overworld_LoadAllPalettes();
+  if (EmuSeedRomActive()) {
+    // JP 1.0 builds its own text table at $9C:F37A.
+    SeedOracle_JpIntroPaletteInit();
+  } else {
+    Text_GenerateMessagePointers();
+    Overworld_LoadAllPalettes();
+  }
 }
 
 void Credits_LoadScene_Overworld_PrepGFX() {  // 828604
@@ -498,13 +498,16 @@ void Intro_InitializeBackgroundSettings() {  // 82c500
 
 void Polyhedral_InitializeThread() {  // 89f7de
   static const uint8 kPolyThreadInit[13] = { 9, 0, 0x1f, 0, 0, 0, 0, 0, 0, 0x30, 0x1d, 0xf8, 9 };
-  memset(kPolyThreadRam, 0, 256);
+  memset(poly_thread_ram, 0, 256);
   thread_other_stack = 0x1f31;
-  memcpy(&g_ram[0x1f32], kPolyThreadInit, 13);
+  memcpy(poly_thread_ram + 0x32, kPolyThreadInit, 13);
 }
 
 void Module00_Intro() {  // 8cc120
-  uint8 skip_at = enhanced_features0 & kFeatures0_SkipIntroOnKeypress ? 4 : 8;
+  // JP 1.0 ($8C:C102) allows the keypress skip from submodule 4; the US
+  // path only from submodule 8 unless the skip feature is enabled.
+  uint8 skip_at = (EmuSeedRomActive() ||
+                   (enhanced_features0 & kFeatures0_SkipIntroOnKeypress)) ? 4 : 8;
 
   if (submodule_index >= skip_at && ((filtered_joypad_L & 0xc0 | filtered_joypad_H) & 0xd0)) {
     FadeMusicAndResetSRAMMirror();
@@ -539,7 +542,8 @@ void Intro_Init() {  // 8cc15d
 void Intro_Init_Continue() {  // 8cc170
   Intro_DisplayLogo();
   int t = subsubmodule_index++;
-  if (t >= 11) {
+  bool seed = EmuSeedRomActive();
+  if (t >= (seed ? 12 : 11)) {
     if (--INIDISP_copy)
       return;
     Intro_InitializeMemory_darken();
@@ -550,14 +554,28 @@ void Intro_Init_Continue() {  // 8cc170
     Intro_Clear1kbBlocksOfWRAM();
     break;
   case 8: Intro_LoadTextPointersAndPalettes(); break;
-  case 9: LoadItemGFXIntoWRAM4BPPBuffer(); break;
-  case 10:LoadFollowerGraphics(); break;
+  case 9:
+    if (seed)
+      SeedOracle_JpLoadFileSelectTilemap();
+    else
+      LoadItemGFXIntoWRAM4BPPBuffer();
+    break;
+  case 10:
+    if (seed)
+      LoadItemGFXIntoWRAM4BPPBuffer();
+    else
+      LoadFollowerGraphics();
+    break;
+  case 11:
+    if (seed)
+      SeedOracle_JpLoadFollowerGraphics();
+    break;
   }
 }
 
 void Intro_Clear1kbBlocksOfWRAM() {  // 8cc1a0
   uint16 i = R16;
-  uint8 *dst = (uint8 *)&g_ram[0x2000];
+  uint8 *dst = (uint8 *)dung_bg2;
   do {
     for (int j = 0; j < 15; j++)
       WORD(dst[i + j * 0x2000]) = 0;
@@ -573,9 +591,15 @@ void Intro_InitializeMemory_darken() {  // 8cc1f5
   sprite_graphics_index = 125;
   aux_tile_theme_index = 81;
   misc_sprites_graphics_index = 8;
-  LoadDefaultGraphics();
-  InitializeTilesets();
-  DecompressAnimatedDungeonTiles(0x5d);
+  if (EmuSeedRomActive()) {
+    SeedOracle_JpLoadDefaultGraphics();
+    SeedOracle_JpInitializeTilesets();
+    SeedOracle_JpDecompressAnimatedDungeonTiles(0x5d);
+  } else {
+    LoadDefaultGraphics();
+    InitializeTilesets();
+    DecompressAnimatedDungeonTiles(0x5d);
+  }
   bg_tile_animation_countdown = 2;
   BYTE(overworld_screen_index) = 0;
   palette_main_indoors = 0;
@@ -824,6 +848,10 @@ void Intro_SpriteType_A_0(int k) {  // 8cc57e
 void Intro_SpriteType_B_0(int k) {  // 8cc5b1
   static const uint8 kIntroSprite0_XLimit[3] = { 75, 95, 117 };
   static const uint8 kIntroSprite0_YLimit[3] = { 88, 48, 88 };
+  // JP 1.0 at $8C:C5A1 uses $50/$28/$50 for the same triangle limits.
+  static const uint8 kIntroSprite0_YLimitJp[3] = { 80, 40, 80 };
+  const uint8 *ylimit =
+      EmuSeedRomActive() ? kIntroSprite0_YLimitJp : kIntroSprite0_YLimit;
 
   AnimateSceneSprite_DrawTriangle(k);
   AnimateSceneSprite_MoveTriangle(k);
@@ -834,7 +862,7 @@ void Intro_SpriteType_B_0(int k) {  // 8cc5b1
     }
     if (intro_x_lo[k] == kIntroSprite0_XLimit[k])
       intro_x_vel[k] = 0;
-    if (intro_y_lo[k] == kIntroSprite0_YLimit[k])
+    if (intro_y_lo[k] == ylimit[k])
       intro_y_vel[k] = 0;
   } else {
     intro_x_vel[k] = 0;
@@ -879,7 +907,46 @@ void AnimateSceneSprite_DrawTriangle(int k) {  // 8cc70f
     {16, 48, 0xac, 0x5b, 2},
     { 0, 48, 0xae, 0x5b, 2},
   };
-  AnimateSceneSprite_AddObjectsToOamBuffer(k, k == 2 ? kIntroSprite0_Right_Ents : kIntroSprite0_Left_Ents, 16);
+  static const IntroSpriteEnt kIntroSprite0_Left_EntsJp[16] = {
+    { 0,  0, 0x80, 0x2b, 2},
+    {16,  0, 0x82, 0x2b, 2},
+    {32,  0, 0x84, 0x2b, 2},
+    {48,  0, 0x86, 0x2b, 2},
+    { 0, 16, 0xa0, 0x2b, 2},
+    {16, 16, 0xa2, 0x2b, 2},
+    {32, 16, 0xa4, 0x2b, 2},
+    {48, 16, 0xa6, 0x2b, 2},
+    { 0, 32, 0x88, 0x2b, 2},
+    {16, 32, 0x8a, 0x2b, 2},
+    {32, 32, 0x8c, 0x2b, 2},
+    {48, 32, 0x8e, 0x2b, 2},
+    { 0, 48, 0xa8, 0x2b, 2},
+    {16, 48, 0xaa, 0x2b, 2},
+    {32, 48, 0xac, 0x2b, 2},
+    {48, 48, 0xae, 0x2b, 2},
+  };
+  static const IntroSpriteEnt kIntroSprite0_Right_EntsJp[16] = {
+    {48,  0, 0x80, 0x6b, 2},
+    {32,  0, 0x82, 0x6b, 2},
+    {16,  0, 0x84, 0x6b, 2},
+    { 0,  0, 0x86, 0x6b, 2},
+    {48, 16, 0xa0, 0x6b, 2},
+    {32, 16, 0xa2, 0x6b, 2},
+    {16, 16, 0xa4, 0x6b, 2},
+    { 0, 16, 0xa6, 0x6b, 2},
+    {48, 32, 0x88, 0x6b, 2},
+    {32, 32, 0x8a, 0x6b, 2},
+    {16, 32, 0x8c, 0x6b, 2},
+    { 0, 32, 0x8e, 0x6b, 2},
+    {48, 48, 0xa8, 0x6b, 2},
+    {32, 48, 0xaa, 0x6b, 2},
+    {16, 48, 0xac, 0x6b, 2},
+    { 0, 48, 0xae, 0x6b, 2},
+  };
+  if (EmuSeedRomActive())
+    AnimateSceneSprite_AddObjectsToOamBuffer(k, k == 2 ? kIntroSprite0_Right_EntsJp : kIntroSprite0_Left_EntsJp, 16);
+  else
+    AnimateSceneSprite_AddObjectsToOamBuffer(k, k == 2 ? kIntroSprite0_Right_Ents : kIntroSprite0_Left_Ents, 16);
 }
 
 void Intro_CopySpriteType4ToOam(int k) {  // 8cc82f
@@ -927,7 +994,8 @@ void EXIT_0CCA90(int k) {  // 8cc84f
 }
 
 void InitializeSceneSprite_Copyright(int k) {  // 8cc850
-  intro_x_lo[k] = 76;
+  // JP 1.0 uses $58 here; the US path uses 76.
+  intro_x_lo[k] = EmuSeedRomActive() ? 0x58 : 76;
   intro_x_hi[k] = 0;
   intro_y_lo[k] = 184;
   intro_y_hi[k] = 0;
@@ -950,7 +1018,23 @@ void AnimateSceneSprite_Copyright(int k) {  // 8cc864
     {88, 0, 0x53, 0x0a, 0},
     {96, 0, 0x54, 0x0a, 0},
   };
-  AnimateSceneSprite_AddObjectsToOamBuffer(k, kIntroSprite2_Ents, 13);
+  // JP 1.0 uses ten entries and no $68 tile in the middle.
+  static const IntroSpriteEnt kIntroSprite2_EntsJp[10] = {
+    { 0, 0, 0x40, 0x0a, 0},
+    { 8, 0, 0x41, 0x0a, 0},
+    {16, 0, 0x42, 0x0a, 0},
+    {24, 0, 0x43, 0x0a, 0},
+    {32, 0, 0x44, 0x0a, 0},
+    {40, 0, 0x50, 0x0a, 0},
+    {48, 0, 0x51, 0x0a, 0},
+    {56, 0, 0x52, 0x0a, 0},
+    {64, 0, 0x53, 0x0a, 0},
+    {72, 0, 0x54, 0x0a, 0},
+  };
+  if (EmuSeedRomActive())
+    AnimateSceneSprite_AddObjectsToOamBuffer(k, kIntroSprite2_EntsJp, 10);
+  else
+    AnimateSceneSprite_AddObjectsToOamBuffer(k, kIntroSprite2_Ents, 13);
 }
 
 void InitializeSceneSprite_Sparkle(int k) {  // 8cc8e2
@@ -2514,10 +2598,21 @@ void Credits_FadeColorAndBeginAnimating() {  // 8ebd8b
   BG1VOFS_copy = BG1VOFS_copy2;
 }
 
+static bool EndingCredits_RawWords(void) {
+  static int cached = -1;
+  if (cached < 0) {
+    cached = EndingCredits_UsesRawWords(
+      kEnding_Credits_Text, kEnding_Credits_Text_SIZE,
+      kEnding_Credits_Offs, kEnding_Credits_Offs_SIZE / sizeof(uint16));
+  }
+  return cached != 0;
+}
+
 void Credits_AddNextAttribution() {  // 8ebe24
   static const uint8 kEnding_Func9_Tab2[14] = { 1, 0, 2, 3, 10, 6, 5, 8, 11, 9, 7, 12, 13, 15 };
   static const uint16 kEnding_Digits_ScrollY[14] = { 0x290, 0x298, 0x2a0, 0x2a8, 0x2b0, 0x2ba, 0x2c2, 0x2ca, 0x2d2, 0x2da, 0x2e2, 0x2ea, 0x2f2, 0x310 };
   static const uint16 kEnding_Credits_DigitChar[2] = { 0x3ce6, 0x3cf6 };
+  bool raw_words = EndingCredits_RawWords();
 
   uint16 *dst = vram_upload_data + (vram_upload_offset >> 1);
 
@@ -2533,14 +2628,19 @@ void Credits_AddNextAttribution() {  // 8ebe24
       int n = *src++;
       *dst++ = swap16(n);
       n = (n + 1) >> 1;
-      do {
-        *dst++ = kEnding_MapData[*src++];
-      } while (--n);
+      if (raw_words) {
+        int high = *src++ << 8;
+        while (n-- > 0)
+          *dst++ = high | *src++;
+      } else {
+        while (n-- > 0)
+          *dst++ = kEnding_MapData[*src++];
+      }
     }
 
     if ((ending_which_dung & 1) || R18 * 2 == kEnding_Digits_ScrollY[ending_which_dung >> 1]) {
       int t = kEnding_Credits_DigitChar[ending_which_dung & 1];
-      WORD(g_ram[0xce]) = t;
+      ending_credits_digit = t;
 
       dst[0] = swap16(R16 + 0x19);
       dst[1] = 0x500;
@@ -2573,6 +2673,8 @@ void Credits_AddEndingSequenceText() {  // 8ec303
   dst[2] = kEnding_MapData[159];
   dst += 3;
 
+  bool raw_words = EndingEpilogue_UsesRawWords(kEnding0_Data, kEnding0_Data_SIZE,
+      kEnding0_Offs, kEnding0_Offs_SIZE / sizeof(uint16));
   const uint8 *curo = &kEnding0_Data[kEnding0_Offs[submodule_index >> 1]];
   const uint8 *endo = &kEnding0_Data[kEnding0_Offs[(submodule_index >> 1) + 1]];
   do {
@@ -2580,9 +2682,16 @@ void Credits_AddEndingSequenceText() {  // 8ec303
     dst[1] = WORD(curo[2]);
     int m = (dst[1] >> 9) & 0x7f;
     dst += 2, curo += 4;
-    do {
-      *dst++ = kEnding_MapData[*curo++];
-    } while (--m >= 0);
+    if (raw_words) {
+      int high = *curo++ << 8;
+      do {
+        *dst++ = high | *curo++;
+      } while (--m >= 0);
+    } else {
+      do {
+        *dst++ = kEnding_MapData[*curo++];
+      } while (--m >= 0);
+    }
   } while (curo != endo);
 
   vram_upload_offset = (char *)dst - (char *)vram_upload_data;

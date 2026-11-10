@@ -1,0 +1,29 @@
+compare: off
+ev 974 ModuleChange 1 0 0
+ev 1004 ModuleChange 4 1 0
+ev 1253 FileCreate 0 0 0
+ev 1253 ModuleChange 1 4 0
+ev 1279 SramLoad 0 0 0
+ev 1279 ModuleChange 5 1 0
+ev 1280 FileLoad 0 0 0
+ev 1280 DungeonEnter 255 0 0
+ev 1280 RoomEnter 260 0 0
+ev 1280 SpriteSpawn 0 115 0
+ev 1280 ModuleChange 7 5 0
+ev 1298 ModuleChange 14 7 0
+ev 1299 DialogueOpen 31 0 0
+ev 2648 DialogueClose 31 0 0
+ev 2648 ModuleChange 7 14 0
+ev 2715 ModuleChange 14 7 0
+ev 2716 DialogueOpen 13 0 0
+ev 2770 DialogueClose 13 0 0
+ev 2770 ModuleChange 7 14 0
+ev 3342 ChestOpen 260 7024 0
+ev 3342 ItemReceive 128 7024 1
+ev 3437 ModuleChange 14 7 0
+ev 3438 DialogueOpen 81 0 0
+ev 3503 DialogueClose 81 0 0
+ev 3503 ModuleChange 7 14 0
+ev 3582 ModuleChange 14 7 0
+ev 3652 ModuleChange 7 14 0
+final 3750 77492217

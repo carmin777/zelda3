@@ -1,0 +1,27 @@
+{
+  "format": "zelda3-voxel-profile",
+  "version": 1,
+  "extends": "../default-profile.json",
+  "camera": {
+    "angle": 72.0,
+    "distance": 1.35,
+    "height": 1.0,
+    "follow_link": true,
+    "yaw": 0.0,
+    "zoom": 0.92
+  },
+  "render": {
+    "side_shade": 0.9,
+    "height_scale": 0.08,
+    "skirt": 0.4
+  },
+  "lighting": {
+    "enabled": true,
+    "ambient": 0.82,
+    "diffuse": 0.18
+  },
+  "shadows": {
+    "enabled": false,
+    "strength": 0.0
+  }
+}

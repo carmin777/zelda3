@@ -1,5 +1,6 @@
 #include "player.h"
 #include "zelda_rtl.h"
+#include "zelda_cpu_infra.h"
 #include "variables.h"
 #include "tile_detect.h"
 #include "ancilla.h"
@@ -12,6 +13,11 @@
 #include "misc.h"
 #include "player_oam.h"
 #include "sprite_main.h"
+#include "mod/events.h"
+#include "mod/hooks.h"
+#include "mod/items.h"
+#include "mod/seed_import.h"
+#include "mod/seed_oracle.h"
 
 static bool g_ApplyLinksMovementToCamera_called;
 
@@ -24,8 +30,8 @@ static const uint8 kLinkSpinGraphicsByDir[] = {
 };
 static const uint8 kLinkSpinDelays[] = { 1, 5, 1, 1, 1, 1, 1, 1, 1, 1, 1, 5 };
 static const uint8 kGrabWallDirs[] = { 4, 8, 1, 2 };
-static const uint8 kGrabWall_AnimSteps[] = { 0, 1, 2, 3, 1, 2, 3 };
-static const uint8 kGrabWall_AnimTimer[] = { 0, 5, 5, 12, 5, 5, 12 };
+static const uint8 kGrabWall_AnimSteps[] = { 0, 1, 2, 3, 1, 2, 3, 0xa5 };  // [7] = $87:b322 (byte after table)
+static const uint8 kGrabWall_AnimTimer[] = { 0, 5, 5, 12, 5, 5, 12, 0x00 };  // [7] = $87:b31b (start of kGrabWall_AnimSteps)
 static const uint8 kCapeDepletionTimers[] = { 4, 8, 8 };
 static const int8 kAvoidJudder1[] = { 0, 1, 2, 3, 4, 5, 6, 7, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 0, 1, 2, 3, 4, 5, 6, 7 };
 static const int8 kLink_DoMoveXCoord_Outdoors_Helper2_y[2] = { -8, 8 };
@@ -163,8 +169,14 @@ void Link_ControlHandler() {  // 87807f
           countdown_for_blink = 58;
         Ancilla_Sfx2_Near(38);
         number_of_times_hurt_by_sprites++;
-        uint8 new_dmg = link_health_current - dmg;
-        if (new_dmg == 0 || new_dmg >= 0xa8) {
+        uint8 health_before = link_health_current;
+        dmg = (uint8)MOD_FILTER(kModFilter_LinkDamage, dmg, g_mod_link_damage_source);
+        SeedOracle_JpAddDamageCounter(dmg);  // z3r $A0:B2DA
+        g_mod_link_damage_source = kModLinkDamage_Sprite;
+        uint8 new_dmg = health_before - dmg;
+        MOD_EMIT(kModEv_LinkDamage, dmg, health_before, 0);
+        if (new_dmg == 0 || new_dmg >= 0xa8 || dmg > health_before) {
+          MOD_EMIT(kModEv_LinkDeath, 0, 0, 0);
           mapbak_TM = TM_copy;
           mapbak_TS = TS_copy;
           saved_module_for_menu = main_module_index;
@@ -795,6 +807,10 @@ void Player_ChangeZ(uint8 zd) {  // 878932
 
 void LinkHop_HoppingSouthOW() {  // 87894e
   link_last_direction_moved_towards = 1;
+  if ((EmuSeedRomActive() || ModSeedImport_Z3rRulesActive()) &&
+      g_ram[0x150CE] != 1 && link_item_boots == 0 &&
+      player_near_pit_state == 1)
+    player_near_pit_state = 0;  // z3r $A4:8766 JumpDownLedge
   link_cant_change_direction = 0;
   link_actual_vel_x = 0;
   link_actual_vel_y = 0;
@@ -1346,7 +1362,11 @@ void LinkApplyTileRebound() {  // 879222
   link_actual_vel_y = kDashTab6Y[link_last_direction_moved_towards];
   link_actual_vel_x = kDashTab6X[link_last_direction_moved_towards];
   link_incapacitated_timer = 24;
-  link_actual_vel_z = link_actual_vel_z_copy = 36;
+  if ((EmuSeedRomActive() || ModSeedImport_Z3rRulesActive()) &&
+      g_ram[0x150CE] != 1 && link_item_boots == 0)
+    link_actual_vel_z = link_actual_vel_z_copy = 0x16;  // z3r $A4:8785
+  else
+    link_actual_vel_z = link_actual_vel_z_copy = 36;
   if (link_flag_moving) {
     link_some_direction_bits = link_direction = kDashTabDir[link_last_direction_moved_towards];
     swimcoll_var11[0] = kDashTabSw11Y[link_last_direction_moved_towards];
@@ -1567,9 +1587,16 @@ void HandleLayerOfDestination() {  // 8794f1
 
 void DungeonPitDoDamage() {  // 879502
   submodule_index = 20;
-  link_health_current -= 8;
-  if (link_health_current >= 0xa8)
+  uint8 health_before = link_health_current;
+  uint8 damage = (uint8)MOD_FILTER(kModFilter_LinkDamage, 8, kModLinkDamage_Pit);
+  SeedOracle_JpAddDamageCounter(8);  // z3r $A0:B2B9
+  if (damage >= health_before)
     link_health_current = 0;
+  else
+    link_health_current = health_before - damage;
+  MOD_EMIT(kModEv_LinkDamage, health_before - link_health_current, health_before, 0);
+  if (link_health_current == 0)
+    MOD_EMIT(kModEv_LinkDeath, 0, 0, 0);
 }
 
 void HandleDungeonLandingFromPit() {  // 879520
@@ -1658,7 +1685,8 @@ void PlayerHandler_04_Swimming() {  // 87963b
   link_spin_attack_step_counter = 0;
   link_state_bits = 0;
   link_picking_throw_state = 0;
-  if (!link_item_flippers)
+  if (!link_item_flippers && !EmuSeedRomActive() &&
+      !ModSeedImport_Z3rRulesActive())
     return;
 
   if (!(swimcoll_var7[0] | swimcoll_var7[1])) {
@@ -1889,8 +1917,18 @@ void Link_ReceiveItem(uint8 item, int chest_position) {  // 8799ad
     countdown_for_blink = 0;
     link_state_bits = 0;
   }
+  if (g_mod_event_mask & (1u << kModEv_ItemReceive)) {
+    int item_filter = item;
+    ModEvents_Emit(kModEv_ItemReceive, item_filter, chest_position, item_receipt_method, &item_filter);
+    item = (uint8)item_filter;
+  }
+  if (ModSeedImport_Active() && !ModItems_IsCustomId(item))
+    item = ModSeedImport_MapItem(item);
+  bool custom_item = ModItems_IsCustomId(item);
+  if (custom_item)
+    ModItems_OnReceive(item, chest_position, item_receipt_method);
   link_receiveitem_index = item;
-  if (item == 0x3e)
+  if (!custom_item && item == 0x3e)
     Ancilla_Sfx3_Near(0x2e);
   link_receiveitem_var1 = 0x60;
   if (item_receipt_method == 0 || item_receipt_method == 3) {
@@ -1906,11 +1944,11 @@ void Link_ReceiveItem(uint8 item, int chest_position) {  // 8799ad
     link_player_handler_state = kPlayerState_HoldUpItem;
     link_pose_for_item = 1;
     link_disable_sprite_damage = 1;
-    if (item == 0x20)
+    if (!custom_item && item == 0x20)
       link_pose_for_item = 2;
   }
   AncillaAdd_ItemReceipt(0x22, 4, chest_position);
-  if (item != 0x20 && item != 0x37 && item != 0x38 && item != 0x39)
+  if (custom_item || (item != 0x20 && item != 0x37 && item != 0x38 && item != 0x39))
     Hud_RefreshIcon();
   Link_CancelDash();
 }
@@ -1978,6 +2016,20 @@ void Link_HandleYItem() {  // 879b0e
     return;
 
   uint8 item = current_item_y;
+  uint8 *special_item_ptr = NULL;
+  int btn_index = 0;
+
+  if ((link_item_in_hand | link_position_mode) == 0 && !(joypad1H_last & kJoypadH_Y)) {
+    // Is any special key held down?
+    btn_index = GetCurrentItemButtonIndex();
+    if (btn_index != 0) {
+      uint8 *cur_item_ptr = GetCurrentItemButtonPtr(btn_index);
+      if (*cur_item_ptr)
+        special_item_ptr = cur_item_ptr;
+    }
+  }
+  if (special_item_ptr)
+    item = Hud_LookupInventoryItem(*special_item_ptr);
 
   if (link_is_bunny_mirror && (item != 11 && item != 20))
     return;
@@ -1991,21 +2043,13 @@ void Link_HandleYItem() {  // 879b0e
   }
 
   uint8 old_down = joypad1H_last, old_pressed = filtered_joypad_H, old_bottle = link_item_bottle_index;
-  if ((link_item_in_hand | link_position_mode) == 0 && !(old_down & kJoypadH_Y)) {
-    // Is any special key held down?
-    int btn_index = GetCurrentItemButtonIndex();
-    if (btn_index != 0) {
-      uint8 *cur_item_ptr = GetCurrentItemButtonPtr(btn_index);
-      if (*cur_item_ptr) {
-        if (*cur_item_ptr >= kHudItem_Bottle1)
-          link_item_bottle_index = *cur_item_ptr - kHudItem_Bottle1 + 1;
-        item = Hud_LookupInventoryItem(*cur_item_ptr);
-        // Pretend it's actually Y that's down
-        joypad1H_last = old_down | kJoypadH_Y;
-        static const uint8 kButtonIndexKeys[4] = { 0, kJoypadL_X, kJoypadL_L, kJoypadL_R };
-        filtered_joypad_H = old_pressed | ((filtered_joypad_L & kButtonIndexKeys[btn_index]) ? kJoypadH_Y : 0);
-      }
-    }
+  if (special_item_ptr) {
+    if (!ModItems_IsCustomHudSlot(*special_item_ptr) && *special_item_ptr >= kHudItem_Bottle1)
+      link_item_bottle_index = *special_item_ptr - kHudItem_Bottle1 + 1;
+    // Pretend it's actually Y that's down
+    joypad1H_last = old_down | kJoypadH_Y;
+    static const uint8 kButtonIndexKeys[4] = { 0, kJoypadL_X, kJoypadL_L, kJoypadL_R };
+    filtered_joypad_H = old_pressed | ((filtered_joypad_L & kButtonIndexKeys[btn_index]) ? kJoypadH_Y : 0);
   }
 
   if (item != current_item_active) {
@@ -2022,32 +2066,40 @@ void Link_HandleYItem() {  // 879b0e
   if (current_item_active == 5 || current_item_active == 6)
     eq_selected_rod = current_item_active - 5 + 1;
 
-  switch (current_item_active) {
-  case 0:
-    break;
-  case 1: LinkItem_Bombs(); break;
-  case 2: LinkItem_Boomerang(); break;
-  case 3: LinkItem_Bow(); break;
-  case 4: LinkItem_Hammer(); break;
-  case 5: LinkItem_Rod(); break;
-  case 6: LinkItem_Rod(); break;
-  case 7: LinkItem_Net(); break;
-  case 8: LinkItem_ShovelAndFlute(); break;
-  case 9: LinkItem_Lamp(); break;
-  case 10: LinkItem_Powder(); break;
-  case 11: LinkItem_Bottle(); break;
-  case 12: LinkItem_Book(); break;
-  case 13: LinkItem_CaneOfByrna(); break;
-  case 14: LinkItem_Hookshot(); break;
-  case 15: LinkItem_Bombos(); break;
-  case 16: LinkItem_Ether(); break;
-  case 17: LinkItem_Quake(); break;
-  case 18: LinkItem_CaneOfSomaria(); break;
-  case 19: LinkItem_Cape(); break;
-  case 20: LinkItem_Mirror(); break;
-  case 21: LinkItem_Shovel(); break;
-  default:
-    assert(0);
+  if (ModItems_IsCustomId(current_item_active)) {
+    if (!is_standing_in_doorway && CheckYButtonPress()) {
+      ModItems_Use(current_item_active);
+      button_mask_b_y &= ~0x40;
+      link_item_in_hand = 0;
+    }
+  } else {
+    switch (current_item_active) {
+    case 0:
+      break;
+    case 1: LinkItem_Bombs(); break;
+    case 2: LinkItem_Boomerang(); break;
+    case 3: LinkItem_Bow(); break;
+    case 4: LinkItem_Hammer(); break;
+    case 5: LinkItem_Rod(); break;
+    case 6: LinkItem_Rod(); break;
+    case 7: LinkItem_Net(); break;
+    case 8: LinkItem_ShovelAndFlute(); break;
+    case 9: LinkItem_Lamp(); break;
+    case 10: LinkItem_Powder(); break;
+    case 11: LinkItem_Bottle(); break;
+    case 12: LinkItem_Book(); break;
+    case 13: LinkItem_CaneOfByrna(); break;
+    case 14: LinkItem_Hookshot(); break;
+    case 15: LinkItem_Bombos(); break;
+    case 16: LinkItem_Ether(); break;
+    case 17: LinkItem_Quake(); break;
+    case 18: LinkItem_CaneOfSomaria(); break;
+    case 19: LinkItem_Cape(); break;
+    case 20: LinkItem_Mirror(); break;
+    case 21: LinkItem_Shovel(); break;
+    default:
+      assert(0);
+    }
   }
 
   joypad1H_last = old_down;
@@ -2153,6 +2205,22 @@ void HandleSwordSfxAndBeam() {  // 879c66
   link_delay_timer_spin_attack = 1;
 }
 
+// Optional Redux behavior: while a spin attack is charging, let the player
+// change the facing direction used when the spin starts. No mod, no effect.
+static void Link_UpdateFacingWhileCharging() {
+  if (!(joypad1H_last & kJoypadH_B))
+    return;
+  if (!MOD_DECIDE(kModDecide_SwordTurnWhileCharging, false, link_direction_facing))
+    return;
+  uint8 dir = joypad1H_last & kJoypadH_AnyDir;
+  if (!dir)
+    return;
+  if (dir & (kJoypadH_Up | kJoypadH_Down))
+    link_direction_facing = (dir & kJoypadH_Down) ? 2 : 0;
+  else
+    link_direction_facing = (dir & kJoypadH_Right) ? 6 : 4;
+}
+
 void Link_CheckForSwordSwing() {  // 879cd9
   if (bitfield_for_a_button & 0x10)
     return;
@@ -2177,6 +2245,7 @@ void Link_CheckForSwordSwing() {  // 879cd9
   link_direction &= ~0xf;
   if (sign8(--link_delay_timer_spin_attack)) {
     if (++button_b_frames >= 9) {
+      Link_UpdateFacingWhileCharging();
       HandleSwordControls();
       return;
     }
@@ -2273,7 +2342,7 @@ void Player_Sword_SpinAttackJerks_HoldDown() {  // 879d9f
 }
 
 void LinkItem_Rod() {  // 879eef
-  static const uint8 kRodAnimDelays[] = { 3, 3, 5 };
+  static const uint8 kRodAnimDelays[] = { 3, 3, 5, 0x24 };  // [3] = $87:9eef (start of LinkItem_Rod, shared by Somaria)
   if (!(button_mask_b_y & 0x40)) {
     if (is_standing_in_doorway || !CheckYButtonPress())
       return;
@@ -2308,7 +2377,7 @@ out:
 }
 
 void LinkItem_Hammer() {  // 879f7b
-  static const uint8 kHammerAnimDelays[] = { 3, 3, 16 };
+  static const uint8 kHammerAnimDelays[] = { 3, 3, 16, 0xad };  // [3] = $87:9f7b (start of LinkItem_Hammer)
   if (link_item_in_hand & 0x10)
     return;
   if (!(button_mask_b_y & 0x40)) {
@@ -2346,7 +2415,7 @@ void LinkItem_Hammer() {  // 879f7b
 }
 
 void LinkItem_Bow() {  // 87a006
-  static const uint8 kBowDelays[] = { 3, 3, 8 };
+  static const uint8 kBowDelays[] = { 3, 3, 8, 0x24 };  // [3] = $87:a006 (start of LinkItem_Bow)
 
   if (!(button_mask_b_y & 0x40)) {
     if (is_standing_in_doorway || !CheckYButtonPress())
@@ -2920,9 +2989,10 @@ void LinkItem_Mirror() {  // 87a91a
   }
   button_mask_b_y &= ~0x40;
 
-  if (is_standing_in_doorway || 
+  bool mirror_allowed = !(is_standing_in_doorway || 
       !cheatWalkThroughWalls && !(enhanced_features0 & kFeatures0_MirrorToDarkworld) && 
-      !player_is_indoors && !(overworld_screen_index & 0x40)) {
+      !player_is_indoors && !(overworld_screen_index & 0x40));
+  if (!MOD_DECIDE(kModDecide_MirrorAllowed, mirror_allowed, savegame_is_darkworld)) {
     Ancilla_Sfx2_Near(60);
     return;
   }
@@ -3306,7 +3376,7 @@ void Player_CheckHandleCapeStuff() {  // 87ae8f
 }
 
 void LinkItem_CaneOfSomaria() {  // 87aec0
-  static const uint8 kRodAnimDelays[] = { 3, 3, 5 };
+  static const uint8 kRodAnimDelays[] = { 3, 3, 5, 0x24 };  // [3] = $87:9eef (start of LinkItem_Rod, shared by Somaria)
   if (!(button_mask_b_y & 0x40)) {
     if (player_on_somaria_platform || is_standing_in_doorway || !CheckYButtonPress())
       return;
@@ -3408,7 +3478,8 @@ bool SearchForByrnaSpark() {  // 87afb5
 }
 
 void LinkItem_Net() {  // 87aff8
-  static const uint8 kBugNetTimers[] = { 11, 6, 7, 8, 1, 2, 3, 4, 5, 6, 1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 9, 4, 5, 6, 7, 8, 1, 2, 3, 4, 10, 8, 1, 2, 3, 4, 5, 6, 7, 8 };
+  static const uint8 kBugNetTimers[41] = { 11, 6, 7, 8, 1, 2, 3, 4, 5, 6, 1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 9, 4, 5, 6, 7, 8, 1, 2, 3, 4, 10, 8, 1, 2, 3, 4, 5, 6, 7, 8,
+    0x00 };  // [40] = $87aff4 (max: 3*10 + link_var30d==10)
   if (!(button_mask_b_y & 0x40)) {
     if (is_standing_in_doorway || !CheckYButtonPress())
       return;
@@ -3805,8 +3876,11 @@ void Link_PerformOpenChest() {  // 87b574
   }
   assert(chest_position != -1);
   item_receipt_method = 1;
-  uint8 alt = kReceiveItemAlternates[item];
-  if (alt != 0xff) {
+  MOD_EMIT(kModEv_ChestOpen, dungeon_room_index, chest_position, 0);
+  uint8 alt = item < (uint8)arraysize(kReceiveItemAlternates) ?
+      kReceiveItemAlternates[item] : 255;
+  alt = (uint8)MOD_FILTER(kModFilter_ReceiveItemAlternate, alt, item);
+  if (alt != 0xff && item < (uint8)arraysize(kMemoryLocationToGiveItemTo)) {
     uint16 ram_addr = kMemoryLocationToGiveItemTo[item];
     if (g_ram[ram_addr])
       item = alt;
@@ -4274,6 +4348,7 @@ endif_19:
   if (bitfield_spike_cactus_tiles & 7) {
     if ((link_incapacitated_timer | countdown_for_blink | link_cape_mode) == 0) {
       if (((link_last_direction_moved_towards == 0) ? (link_y_coord & 4) == 0 : ((link_y_coord & 4) != 0)) && (countdown_for_blink == 0)) {
+        g_mod_link_damage_source = kModLinkDamage_Environment;
         link_give_damage = 8;
         Link_CancelDash();
         Link_ForceUnequipCape_quietly();
@@ -4556,6 +4631,7 @@ void StartMovementCollisionChecks_Y_HandleOutdoors() {  // 87beaf
   if ((bitfield_spike_cactus_tiles & 7) != 0) {
     if ((link_incapacitated_timer | countdown_for_blink | link_cape_mode) == 0) {
       if (link_last_direction_moved_towards == 0 ? ((link_y_coord & 4) == 0) : ((link_y_coord & 4) != 0)) {
+        g_mod_link_damage_source = kModLinkDamage_Environment;
         link_give_damage = 8;
         Link_CancelDash();
         Link_ForceUnequipCape_quietly();
@@ -4914,6 +4990,7 @@ endif_19:
   if (bitfield_spike_cactus_tiles & 7) {
     if ((link_incapacitated_timer | countdown_for_blink | link_cape_mode) == 0) {
       if (((link_last_direction_moved_towards == 2) ? (link_x_coord & 4) == 0 : ((link_x_coord & 4) != 0)) && (countdown_for_blink == 0)) {
+        g_mod_link_damage_source = kModLinkDamage_Environment;
         link_give_damage = 8;
         Link_CancelDash();
         Link_ForceUnequipCape_quietly();
@@ -5184,6 +5261,7 @@ void StartMovementCollisionChecks_X_HandleOutdoors() {  // 87c8e9
   if ((bitfield_spike_cactus_tiles & 7) != 0) {
     if ((link_incapacitated_timer | countdown_for_blink | link_cape_mode) == 0) {
       if (link_last_direction_moved_towards == 2 ? ((link_x_coord & 4) == 0) : ((link_x_coord & 4) != 0)) {
+        g_mod_link_damage_source = kModLinkDamage_Environment;
         link_give_damage = 8;
         Link_CancelDash();
         LinkApplyTileRebound();
@@ -5406,6 +5484,7 @@ void TileDetect_MainHandler(uint8 item) {  // 87d077
         link_is_bunny = 0;
         link_is_bunny_mirror = 0;
       }
+      g_mod_link_damage_source = kModLinkDamage_Environment;
       link_give_damage = 8;
       Link_CancelDash();
       return;

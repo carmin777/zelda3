@@ -1,0 +1,61 @@
+{
+  "format": "zelda3-hd-pack",
+  "version": 1,
+  "scale": 2,
+  "image": "tiles.png",
+  "tiles": [
+    {
+      "hash": 1522944453,
+      "palette": 2,
+      "bpp": 4,
+      "x": 0,
+      "y": 0,
+      "w": 16,
+      "h": 16,
+      "conditions": {
+        "indoors": false,
+        "attr": 72
+      }
+    },
+    {
+      "hash": 333936781,
+      "palette": 4,
+      "bpp": 4,
+      "x": 16,
+      "y": 0,
+      "w": 16,
+      "h": 16,
+      "conditions": {
+        "indoors": false,
+        "attr": 72
+      }
+    },
+    {
+      "hash": 1892290577,
+      "palette": 3,
+      "bpp": 4,
+      "x": 32,
+      "y": 0,
+      "w": 16,
+      "h": 16,
+      "conditions": {
+        "indoors": true,
+        "attr": 0,
+        "room": 261
+      }
+    },
+    {
+      "hash": 2077542049,
+      "palette": 7,
+      "bpp": 4,
+      "x": 48,
+      "y": 0,
+      "w": 16,
+      "h": 16,
+      "conditions": {
+        "indoors": true,
+        "attr": 1
+      }
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "id": "no-sword-beam",
+  "name": "No Sword Beam",
+  "version": "1.0.0",
+  "api": 1,
+  "script": "main.lua"
+}

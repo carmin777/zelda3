@@ -1,0 +1,8 @@
+compare: off
+ev 148 SpriteSpawn 12 107 0
+ev 149 LinkDamage 4 24 0
+ev 149 LinkDamage 4 24 0
+ev 186 Player2SpriteDamage 13 107 2
+ev 256 SpriteKilled 13 107 0
+ev 437 CameraSplit 1 0 145
+final 450 09438bfd

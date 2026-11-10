@@ -1,0 +1,3 @@
+compare: off
+ev 40 Player2SpriteDamage 13 34 4
+final 60 68930355

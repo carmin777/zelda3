@@ -1,0 +1,6 @@
+compare: off
+ev 9 SpriteSpawn 15 168 0
+ev 12 ModuleChange 14 9 0
+ev 192 ModuleChange 9 14 0
+ev 203 SpriteSpawn 14 168 0
+final 220 945db8a6

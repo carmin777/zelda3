@@ -1,0 +1,10 @@
+{
+  "id": "inimigo-novo",
+  "name": "Inimigo novo: soldado que foge",
+  "version": "1.0.0",
+  "api": 1,
+  "enabled": true,
+  "priority": 0,
+  "permissions": ["state_write"],
+  "script": "main.lua"
+}

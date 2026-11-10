@@ -1,10 +1,12 @@
 #include "config.h"
 #include "types.h"
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include <SDL.h>
 #include "features.h"
 #include "util.h"
+#include "mod/mod_features.h"
 
 enum {
   kKeyMod_ScanCode = 0x200,
@@ -39,6 +41,15 @@ static const uint16 kDefaultKbdControls[kKeys_Total] = {
   _(SDLK_w), _(SDLK_o), S(SDLK_w), C(SDLK_e),
   // ClearKeyLog, StopReplay, Fullscreen, Reset, Pause, PauseDimmed, Turbo, ReplayTurbo, WindowBigger, WindowSmaller, DisplayPerf, ToggleRenderer
   _(SDLK_k), _(SDLK_l), A(SDLK_RETURN), C(SDLK_r), S(SDLK_p), _(SDLK_p), _(SDLK_TAB), _(SDLK_t), N, N, _(SDLK_f), _(SDLK_r),
+  // ToggleVoxel, VoxelCameraLeft/Right/Up/Down, ZoomIn/Out, Reset, Shadows, Lighting
+  _(SDLK_F11), A(SDLK_LEFT), A(SDLK_RIGHT), A(SDLK_UP), A(SDLK_DOWN),
+  A(SDLK_EQUALS), A(SDLK_MINUS), A(SDLK_0), _(SDLK_F12), S(SDLK_F11),
+};
+
+// Default keys for the second local player. They are only consulted when
+// [Coop] Local = 1, and deliberately avoid the default player 1 bindings above.
+static const uint16 kDefaultKbdControls2[kKeys_Controls_Last - kKeys_Controls + 1] = {
+  _(SDLK_i), _(SDLK_m), _(SDLK_j), _(SDLK_n), _(SDLK_u), _(SDLK_e), _(SDLK_h), _(SDLK_y), _(SDLK_b), _(SDLK_g), _(SDLK_7), _(SDLK_8),
 };
 #undef _
 #undef A
@@ -59,6 +70,7 @@ static const KeyNameId kKeyNameId[] = {
   S(CheatLife), S(CheatKeys), S(CheatEquipment), S(CheatWalkThroughWalls),
   S(ClearKeyLog), S(StopReplay), S(Fullscreen), S(Reset),
   S(Pause), S(PauseDimmed), S(Turbo), S(ReplayTurbo), S(WindowBigger), S(WindowSmaller), S(VolumeUp), S(VolumeDown), S(DisplayPerf), S(ToggleRenderer),
+  S(ToggleVoxel), S(VoxelCameraLeft), S(VoxelCameraRight), S(VoxelCameraUp), S(VoxelCameraDown), S(VoxelCameraZoomIn), S(VoxelCameraZoomOut), S(VoxelCameraReset), S(VoxelShadows), S(VoxelLighting),
 };
 #undef S
 #undef M
@@ -66,27 +78,33 @@ typedef struct KeyMapHashEnt {
   uint16 key, cmd, next;
 } KeyMapHashEnt;
 
-static uint16 keymap_hash_first[255];
-static KeyMapHashEnt *keymap_hash;
-static int keymap_hash_size;
-static bool has_keynameid[countof(kKeyNameId)];
+typedef struct KeyMap {
+  uint16 hash_first[255];
+  KeyMapHashEnt *ents;
+  int size;
+} KeyMap;
 
-static bool KeyMapHash_Add(uint16 key, uint16 cmd) {
-  if ((keymap_hash_size & 0xff) == 0) {
-    if (keymap_hash_size > 10000)
+static KeyMap g_keymap, g_keymap2;
+static bool has_keynameid[countof(kKeyNameId)];
+static bool has_keynameid2;
+
+static bool KeyMapHash_Add(KeyMap *map, uint16 key, uint16 cmd) {
+  if ((map->size & 0xff) == 0) {
+    if (map->size > 10000)
       Die("Too many keys");
-    keymap_hash = realloc(keymap_hash, sizeof(KeyMapHashEnt) * (keymap_hash_size + 256));
+    map->ents = realloc(map->ents, sizeof(KeyMapHashEnt) * (map->size + 256));
+    if (!map->ents) Die("realloc failure");
   }
-  int i = keymap_hash_size++;
-  KeyMapHashEnt *ent = &keymap_hash[i];
+  int i = map->size++;
+  KeyMapHashEnt *ent = &map->ents[i];
   ent->key = key;
   ent->cmd = cmd;
   ent->next = 0;
   int j = (uint32)key % 255;
 
-  uint16 *cur = &keymap_hash_first[j];
+  uint16 *cur = &map->hash_first[j];
   while (*cur) {
-    KeyMapHashEnt *ent = &keymap_hash[*cur - 1];
+    KeyMapHashEnt *ent = &map->ents[*cur - 1];
     if (ent->key == key)
       return false;
     cur = &ent->next;
@@ -95,10 +113,10 @@ static bool KeyMapHash_Add(uint16 key, uint16 cmd) {
   return true;
 }
 
-static int KeyMapHash_Find(uint16 key) {
-  int i = keymap_hash_first[key % 255];
+static int KeyMapHash_Find(const KeyMap *map, uint16 key) {
+  int i = map->hash_first[key % 255];
   while (i) {
-    KeyMapHashEnt *ent = &keymap_hash[i - 1];
+    const KeyMapHashEnt *ent = &map->ents[i - 1];
     if (ent->key == key)
       return ent->cmd;
     i = ent->next;
@@ -106,9 +124,9 @@ static int KeyMapHash_Find(uint16 key) {
   return 0;
 }
 
-int FindCmdForSdlKey(SDL_Keycode code, SDL_Keymod mod) {
+static int KeyFromSdlKey(SDL_Keycode code, SDL_Keymod mod) {
   if (code & ~(SDLK_SCANCODE_MASK | 0x1ff))
-    return 0;
+    return -1;
   int key = 0;
   if (code != SDLK_LALT && code != SDLK_RALT)
     key |=  mod & KMOD_ALT ? kKeyMod_Alt : 0;
@@ -117,10 +135,20 @@ int FindCmdForSdlKey(SDL_Keycode code, SDL_Keymod mod) {
   if (code != SDLK_LSHIFT && code != SDLK_RSHIFT)
     key |= mod & KMOD_SHIFT ? kKeyMod_Shift : 0;
   key |= REMAP_SDL_KEYCODE(code);
-  return KeyMapHash_Find(key);
+  return key;
 }
 
-static void ParseKeyArray(char *value, int cmd, int size) {
+int FindCmdForSdlKey(SDL_Keycode code, SDL_Keymod mod) {
+  int key = KeyFromSdlKey(code, mod);
+  return key < 0 ? 0 : KeyMapHash_Find(&g_keymap, (uint16)key);
+}
+
+int FindCmdForSdlKey2(SDL_Keycode code, SDL_Keymod mod) {
+  int key = KeyFromSdlKey(code, mod);
+  return key < 0 ? 0 : KeyMapHash_Find(&g_keymap2, (uint16)key);
+}
+
+static void ParseKeyArrayTo(KeyMap *map, char *value, int cmd, int size) {
   char *s;
   int i = 0;
   for (; i < size && (s = NextDelim(&value, ',')) != NULL; i++, cmd += (cmd != 0)) {
@@ -143,7 +171,7 @@ static void ParseKeyArray(char *value, int cmd, int size) {
       fprintf(stderr, "Unknown key: '%s'\n", s);
       continue;
     }
-    if (!KeyMapHash_Add(key_with_mod | REMAP_SDL_KEYCODE(key), cmd))
+    if (!KeyMapHash_Add(map, key_with_mod | REMAP_SDL_KEYCODE(key), cmd))
       fprintf(stderr, "Duplicate key: '%s'\n", s);
   }
 }
@@ -153,10 +181,15 @@ typedef struct GamepadMapEnt {
   uint16 cmd, next;
 } GamepadMapEnt;
 
-static uint16 joymap_first[kGamepadBtn_Count];
-static GamepadMapEnt *joymap_ents;
-static int joymap_size;
+typedef struct GamepadMap {
+  uint16 hash_first[kGamepadBtn_Count];
+  GamepadMapEnt *ents;
+  int size;
+} GamepadMap;
+
+static GamepadMap g_joymap, g_joymap2;
 static bool has_joypad_controls;
+static bool has_joypad_controls2;
 
 static int CountBits32(uint32 n) {
   int count = 0;
@@ -165,34 +198,44 @@ static int CountBits32(uint32 n) {
   return count;
 }
 
-static void GamepadMap_Add(int button, uint32 modifiers, uint16 cmd) {
-  if ((joymap_size & 0xff) == 0) {
-    if (joymap_size > 1000)
+static void GamepadMap_AddTo(GamepadMap *map, int button, uint32 modifiers,
+                             uint16 cmd) {
+  if ((map->size & 0xff) == 0) {
+    if (map->size > 1000)
       Die("Too many joypad keys");
-    joymap_ents = realloc(joymap_ents, sizeof(GamepadMapEnt) * (joymap_size + 64));
-    if (!joymap_ents) Die("realloc failure");
+    map->ents = realloc(map->ents, sizeof(GamepadMapEnt) * (map->size + 64));
+    if (!map->ents) Die("realloc failure");
   }
-  uint16 *p = &joymap_first[button];
+  uint16 *p = &map->hash_first[button];
   // Insert it as early as possible but before after any entry with more modifiers.
   int cb = CountBits32(modifiers);
-  while (*p && cb < CountBits32(joymap_ents[*p - 1].modifiers))
-    p = &joymap_ents[*p - 1].next;
-  int i = joymap_size++;
-  GamepadMapEnt *ent = &joymap_ents[i];
+  while (*p && cb < CountBits32(map->ents[*p - 1].modifiers))
+    p = &map->ents[*p - 1].next;
+  int i = map->size++;
+  GamepadMapEnt *ent = &map->ents[i];
   ent->modifiers = modifiers;
   ent->cmd = cmd;
   ent->next = *p;
   *p = i + 1;
 }
 
-int FindCmdForGamepadButton(int button, uint32 modifiers) {
-  GamepadMapEnt *ent;
-  for(int e = joymap_first[button]; e != 0; e = ent->next) {
-    ent = &joymap_ents[e - 1];
+static int GamepadMap_Find(const GamepadMap *map, int button,
+                           uint32 modifiers) {
+  const GamepadMapEnt *ent;
+  for (int e = map->hash_first[button]; e != 0; e = ent->next) {
+    ent = &map->ents[e - 1];
     if ((modifiers & ent->modifiers) == ent->modifiers)
       return ent->cmd;
   }
   return 0;
+}
+
+int FindCmdForGamepadButton(int button, uint32 modifiers) {
+  return GamepadMap_Find(&g_joymap, button, modifiers);
+}
+
+int FindCmdForGamepadButton2(int button, uint32 modifiers) {
+  return GamepadMap_Find(&g_joymap2, button, modifiers);
 }
 
 static int ParseGamepadButtonName(const char **value) {
@@ -223,7 +266,8 @@ static const uint8 kDefaultGamepadCmds[] = {
   kGamepadBtn_B, kGamepadBtn_A, kGamepadBtn_Y, kGamepadBtn_X, kGamepadBtn_L1, kGamepadBtn_R1,
 };
 
-static void ParseGamepadArray(char *value, int cmd, int size) {
+static void ParseGamepadArrayTo(GamepadMap *map, char *value, int cmd,
+                                int size) {
   char *s;
   int i = 0;
   for (; i < size && (s = NextDelim(&value, ',')) != NULL; i++, cmd += (cmd != 0)) {
@@ -242,7 +286,7 @@ static void ParseGamepadArray(char *value, int cmd, int size) {
         ss++;
         modifiers |= 1 << button;
       } else if (*ss == 0) {
-        GamepadMap_Add(button, modifiers, cmd);
+        GamepadMap_AddTo(map, button, modifiers, cmd);
         break;
       } else
         goto BAD;
@@ -255,12 +299,20 @@ static void RegisterDefaultKeys() {
     if (!has_keynameid[i]) {
       int size = kKeyNameId[i].size, k = kKeyNameId[i].id;
       for (int j = 0; j < size; j++, k++)
-        KeyMapHash_Add(kDefaultKbdControls[k], k);
+        KeyMapHash_Add(&g_keymap, kDefaultKbdControls[k], k);
     }
+  }
+  if (!has_keynameid2) {
+    for (int i = 0; i < countof(kDefaultKbdControls2); i++)
+      KeyMapHash_Add(&g_keymap2, kDefaultKbdControls2[i], kKeys_Controls + i);
   }
   if (!has_joypad_controls) {
     for (int i = 0; i < countof(kDefaultGamepadCmds); i++)
-      GamepadMap_Add(kDefaultGamepadCmds[i], 0, kKeys_Controls + i);
+      GamepadMap_AddTo(&g_joymap, kDefaultGamepadCmds[i], 0, kKeys_Controls + i);
+  }
+  if (!has_joypad_controls2) {
+    for (int i = 0; i < countof(kDefaultGamepadCmds); i++)
+      GamepadMap_AddTo(&g_joymap2, kDefaultGamepadCmds[i], 0, kKeys_Controls + i);
   }
 }
 
@@ -277,6 +329,16 @@ static int GetIniSection(const char *s) {
     return 4;
   if (StringEqualsNoCase(s, "[GamepadMap]"))
     return 5;
+  if (StringEqualsNoCase(s, "[Mods]"))
+    return 6;
+  if (StringEqualsNoCase(s, "[Network]"))
+    return 7;
+  if (StringEqualsNoCase(s, "[Coop]"))
+    return 8;
+  if (StringEqualsNoCase(s, "[KeyMap2]"))
+    return 9;
+  if (StringEqualsNoCase(s, "[GamepadMap2]"))
+    return 10;
   return -1;
 }
 
@@ -302,20 +364,12 @@ bool ParseBool(const char *value, bool *result) {
   return rv;
 }
 
-static bool ParseBoolBit(const char *value, uint32 *data, uint32 mask) {
-  bool tmp;
-  if (!ParseBool(value, &tmp))
-    return false;
-  *data = *data & ~mask | (tmp ? mask : 0);
-  return true;
-}
-
 static bool HandleIniConfig(int section, const char *key, char *value) {
   if (section == 0) {
     for (int i = 0; i < countof(kKeyNameId); i++) {
       if (StringEqualsNoCase(key, kKeyNameId[i].name)) {
         has_keynameid[i] = true;
-        ParseKeyArray(value, kKeyNameId[i].id, kKeyNameId[i].size);
+        ParseKeyArrayTo(&g_keymap, value, kKeyNameId[i].id, kKeyNameId[i].size);
         return true;
       }
     }
@@ -324,9 +378,23 @@ static bool HandleIniConfig(int section, const char *key, char *value) {
       if (StringEqualsNoCase(key, kKeyNameId[i].name)) {
         if (i == 1)
           has_joypad_controls = true;
-        ParseGamepadArray(value, kKeyNameId[i].id, kKeyNameId[i].size);
+        ParseGamepadArrayTo(&g_joymap, value, kKeyNameId[i].id, kKeyNameId[i].size);
         return true;
       }
+    }
+  } else if (section == 9) {
+    if (StringEqualsNoCase(key, "Controls")) {
+      has_keynameid2 = true;
+      ParseKeyArrayTo(&g_keymap2, value, kKeys_Controls,
+                      kKeys_Controls_Last - kKeys_Controls + 1);
+      return true;
+    }
+  } else if (section == 10) {
+    if (StringEqualsNoCase(key, "Controls")) {
+      has_joypad_controls2 = true;
+      ParseGamepadArrayTo(&g_joymap2, value, kKeys_Controls,
+                          kKeys_Controls_Last - kKeys_Controls + 1);
+      return true;
     }
   } else if (section == 1) {
     if (StringEqualsNoCase(key, "WindowSize")) {
@@ -366,14 +434,19 @@ static bool HandleIniConfig(int section, const char *key, char *value) {
       return ParseBool(value, &g_config.linear_filtering);
     } else if (StringEqualsNoCase(key, "NoSpriteLimits")) {
       return ParseBool(value, &g_config.no_sprite_limits);
+    } else if (StringEqualsNoCase(key, "FrameDescription")) {
+      return ParseBool(value, &g_config.frame_description);
+    } else if (StringEqualsNoCase(key, "RenderPlugin")) {
+      g_config.render_plugin = *value ? value : NULL;
+      return true;
     } else if (StringEqualsNoCase(key, "LinkGraphics")) {
       g_config.link_graphics = value;
       return true;
     } else if (StringEqualsNoCase(key, "Shader")) {
       g_config.shader = *value ? value : NULL;
       return true;
-    } else if (StringEqualsNoCase(key, "DimFlashes")) {
-      return ParseBoolBit(value, &g_config.features0, kFeatures0_DimFlashes);
+    } else if (ModFeatures_ParseIni(section, key, value, &g_config.features0)) {
+      return true;
     }
   } else if (section == 2) {
     if (StringEqualsNoCase(key, "EnableAudio")) {
@@ -447,34 +520,104 @@ static bool HandleIniConfig(int section, const char *key, char *value) {
       return true;
     }
   } else if (section == 4) {
-    if (StringEqualsNoCase(key, "ItemSwitchLR")) {
-      return ParseBoolBit(value, &g_config.features0, kFeatures0_SwitchLR);
-    } else if (StringEqualsNoCase(key, "ItemSwitchLRLimit")) {
-      return ParseBoolBit(value, &g_config.features0, kFeatures0_SwitchLRLimit);
-    } else if (StringEqualsNoCase(key, "TurnWhileDashing")) {
-      return ParseBoolBit(value, &g_config.features0, kFeatures0_TurnWhileDashing);
-    } else if (StringEqualsNoCase(key, "MirrorToDarkworld")) {
-      return ParseBoolBit(value, &g_config.features0, kFeatures0_MirrorToDarkworld);
-    } else if (StringEqualsNoCase(key, "CollectItemsWithSword")) {
-      return ParseBoolBit(value, &g_config.features0, kFeatures0_CollectItemsWithSword);
-    } else if (StringEqualsNoCase(key, "BreakPotsWithSword")) {
-      return ParseBoolBit(value, &g_config.features0, kFeatures0_BreakPotsWithSword);
-    } else if (StringEqualsNoCase(key, "DisableLowHealthBeep")) {
-      return ParseBoolBit(value, &g_config.features0, kFeatures0_DisableLowHealthBeep);
-    } else if (StringEqualsNoCase(key, "SkipIntroOnKeypress")) {
-      return ParseBoolBit(value, &g_config.features0, kFeatures0_SkipIntroOnKeypress);
-    } else if (StringEqualsNoCase(key, "ShowMaxItemsInYellow")) {
-      return ParseBoolBit(value, &g_config.features0, kFeatures0_ShowMaxItemsInYellow);
-    } else if (StringEqualsNoCase(key, "MoreActiveBombs")) {
-      return ParseBoolBit(value, &g_config.features0, kFeatures0_MoreActiveBombs);
-    } else if (StringEqualsNoCase(key, "CarryMoreRupees")) {
-      return ParseBoolBit(value, &g_config.features0, kFeatures0_CarryMoreRupees);
-    } else if (StringEqualsNoCase(key, "MiscBugFixes")) {
-      return ParseBoolBit(value, &g_config.features0, kFeatures0_MiscBugFixes);
-    } else if (StringEqualsNoCase(key, "GameChangingBugFixes")) {
-      return ParseBoolBit(value, &g_config.features0, kFeatures0_GameChangingBugFixes);
-    } else if (StringEqualsNoCase(key, "CancelBirdTravel")) {
-      return ParseBoolBit(value, &g_config.features0, kFeatures0_CancelBirdTravel);
+    if (ModFeatures_ParseIni(section, key, value, &g_config.features0))
+      return true;
+  } else if (section == 6) {
+    if (StringEqualsNoCase(key, "Enabled")) {
+      return ParseBool(value, &g_config.mods_enabled);
+    } else if (StringEqualsNoCase(key, "Directory")) {
+      g_config.mods_directory = value;
+      return true;
+    } else if (StringEqualsNoCase(key, "LuaInstructionLimit")) {
+      char *end;
+      errno = 0;
+      unsigned long long limit = strtoull(value, &end, 10);
+      if (errno != 0 || *value == 0 || *end != 0 || limit == 0)
+        return false;
+      g_config.lua_instruction_limit = (uint64)limit;
+      return true;
+    } else if (StringEqualsNoCase(key, "LuaMemoryMB")) {
+      char *end;
+      errno = 0;
+      unsigned long long megabytes = strtoull(value, &end, 10);
+      if (errno != 0 || *value == 0 || *end != 0 || megabytes == 0 ||
+          megabytes > UINT32_MAX)
+        return false;
+      g_config.lua_memory_mb = (uint32)megabytes;
+      return true;
+    }
+  } else if (section == 7) {
+    if (StringEqualsNoCase(key, "EmuNwa")) {
+      return ParseBool(value, &g_config.nwa_enabled);
+    } else if (StringEqualsNoCase(key, "EmuNwaPort")) {
+      char *end;
+      errno = 0;
+      long port = strtol(value, &end, 10);
+      if (errno != 0 || *value == 0 || *end != 0 || port < 1 || port > 65535)
+        return false;
+      g_config.nwa_port = (uint16)port;
+      return true;
+    } else if (StringEqualsNoCase(key, "EmuNwaAllowWrite")) {
+      return ParseBool(value, &g_config.nwa_allow_write);
+    }
+  } else if (section == 8) {
+    if (StringEqualsNoCase(key, "Enabled")) {
+      return ParseBool(value, &g_config.coop_enabled);
+    } else if (StringEqualsNoCase(key, "Local")) {
+      return ParseBool(value, &g_config.coop_local);
+    } else if (StringEqualsNoCase(key, "SharedWorld")) {
+      return ParseBool(value, &g_config.coop_shared_world);
+    } else if (StringEqualsNoCase(key, "LocalLayout")) {
+      g_config.coop_local_vertical =
+          StringEqualsNoCase(value, "Vertical") ||
+          StringEqualsNoCase(value, "v") ||
+          StringEqualsNoCase(value, "stacked");
+      if (!g_config.coop_local_vertical &&
+          !StringEqualsNoCase(value, "Horizontal") &&
+          !StringEqualsNoCase(value, "h") &&
+          !StringEqualsNoCase(value, "sidebyside"))
+        return false;
+      return true;
+    } else if (StringEqualsNoCase(key, "Server")) {
+      g_config.coop_server = value;
+      return true;
+    } else if (StringEqualsNoCase(key, "Port")) {
+      char *end;
+      errno = 0;
+      long port = strtol(value, &end, 10);
+      if (errno != 0 || *value == 0 || *end != 0 || port < 1 || port > 65535)
+        return false;
+      g_config.coop_port = (uint16)port;
+      return true;
+    } else if (StringEqualsNoCase(key, "Group")) {
+      g_config.coop_group = value;
+      return true;
+    } else if (StringEqualsNoCase(key, "PlayerName")) {
+      g_config.coop_player_name = value;
+      return true;
+    } else if (StringEqualsNoCase(key, "PlayerName2")) {
+      g_config.coop_player_name2 = value;
+      return true;
+    } else if (StringEqualsNoCase(key, "PlayerColor")) {
+      char *end;
+      errno = 0;
+      long color = strtol(value, &end, 0);
+      if (errno != 0 || *value == 0 || *end != 0 || color < 0 || color > 0xFFFF)
+        return false;
+      g_config.coop_player_color = (uint16)color;
+      return true;
+    } else if (StringEqualsNoCase(key, "PlayerColor2")) {
+      char *end;
+      errno = 0;
+      long color = strtol(value, &end, 0);
+      if (errno != 0 || *value == 0 || *end != 0 || color < 0 || color > 0xFFFF)
+        return false;
+      g_config.coop_player_color2 = (uint16)color;
+      return true;
+    } else if (StringEqualsNoCase(key, "RaceMode")) {
+      return ParseBool(value, &g_config.coop_race_mode);
+    } else if (StringEqualsNoCase(key, "ShowNames")) {
+      return ParseBool(value, &g_config.coop_show_names);
     }
   }
   return false;
@@ -518,6 +661,26 @@ static bool ParseOneConfigFile(const char *filename, int depth) {
 
 void ParseConfigFile(const char *filename) {
   g_config.msuvolume = 100;  // default msu volume, 100%
+  g_config.mods_enabled = true;
+  g_config.mods_directory = "mods";
+  g_config.lua_instruction_limit = 10000000;
+  g_config.lua_memory_mb = 32;
+  g_config.nwa_enabled = false;
+  g_config.nwa_port = 48879;
+  g_config.nwa_allow_write = false;
+  g_config.coop_enabled = false;
+  g_config.coop_local = false;
+  g_config.coop_local_vertical = false;
+  g_config.coop_shared_world = false;
+  g_config.coop_server = "alttp.online";
+  g_config.coop_port = 4590;
+  g_config.coop_group = "zelda3";
+  g_config.coop_player_name = "Link";
+  g_config.coop_player_name2 = "Link2";
+  g_config.coop_player_color = 0x085C;
+  g_config.coop_player_color2 = 0x0B7C;
+  g_config.coop_show_names = true;
+  g_config.coop_race_mode = false;
 
   if (filename != NULL || !ParseOneConfigFile("zelda3.user.ini", 0)) {
     if (filename == NULL)

@@ -1,4 +1,6 @@
 #include "zelda_rtl.h"
+#include "zelda_cpu_infra.h"
+#include "mod/seed_oracle.h"
 #include "snes/snes_regs.h"
 #include "variables.h"
 #include "dungeon.h"
@@ -14,6 +16,9 @@
 #include "player_oam.h"
 #include "tagalong.h"
 #include "messaging.h"
+#include "mod/events.h"
+#include "mod/hooks.h"
+#include "mod/seed_import.h"
 #include "assets.h"
 
 // todo: move to config
@@ -124,8 +129,6 @@ static const int8 kDungeon_QueryIfTileLiftable_x[4] = { 7, 7, -3, 16 };
 static const int8 kDungeon_QueryIfTileLiftable_y[4] = { 3, 24, 14, 14 };
 static const uint16 kDungeon_QueryIfTileLiftable_rv[16] = { 0x5252, 0x5050, 0x5454, 0x0, 0x2323 };
 static const uint16 kDoor_BlastWallUp_Dsts[] = { 0xd8a, 0xdaa, 0xdca, 0x2b6, 0xab6, 0x12b6 };
-#define adjacent_doors_flags (*(uint16*)(g_ram+0x1100))
-#define adjacent_doors ((uint16*)(g_ram+0x1110))
 static const DungPalInfo kDungPalinfos[41] = {
   { 0,  0,  3,  1},
   { 2,  0,  3,  1},
@@ -2395,7 +2398,7 @@ void Dungeon_PrepareNextRoomQuadrantUpload() {  // 80913f
   uint16 *src = &dung_bg2[kUploadBgSrcs[ofs] / 2];
   int p = 0;
   do {
-    UploadVram_32x32 *d = (UploadVram_32x32 *)&g_ram[0x1000 + p * 2];
+    UploadVram_32x32 *d = (UploadVram_32x32 *)((uint8 *)&uvram_screen + p * 2);
     do {
       d->row[0].col[0] = src[XY(0, 0)];
       d->row[0].col[1] = src[XY(1, 0)];
@@ -2429,7 +2432,7 @@ void TileMapPrep_NotWaterOnTag() {  // 8091d3
   uint16 *src = &dung_bg1[kUploadBgSrcs[ofs] / 2];
   int p = 0;
   do {
-    UploadVram_32x32 *d = (UploadVram_32x32 *)&g_ram[0x1000 + p * 2];
+    UploadVram_32x32 *d = (UploadVram_32x32 *)((uint8 *)&uvram_screen + p * 2);
     do {
       d->row[0].col[0] = src[XY(0, 0)];
       d->row[0].col[1] = src[XY(1, 0)];
@@ -2492,10 +2495,12 @@ void OrientLampLightCone() {  // 80f567
 }
 
 void PrepareDungeonExitFromBossFight() {  // 80f945
+  SeedOracle_JpScreenTransition();  // z3r hook $A4:87DD
   SavePalaceDeaths();
   SaveDungeonKeys();
   dung_savegame_state_bits |= 0x8000;
   Dungeon_FlagRoomData_Quadrants();
+  MOD_EMIT(kModEv_BossDefeated, cur_palace_index_x2, 0, 0);
 
   int j = FindInByteArray(kDungeonExit_From, BYTE(dungeon_room_index), countof(kDungeonExit_From));
   assert(j >= 0);
@@ -3741,6 +3746,8 @@ void Dungeon_LoadHeader() {  // 81b564
     Dungeon_CheckAdjacentRoomsForOpenDoors(6, dungeon_room_index - 16);
   if (dungeon_room_index + 16 < 0x140)
     Dungeon_CheckAdjacentRoomsForOpenDoors(0, dungeon_room_index + 16);
+
+  MOD_EMIT(kModEv_RoomEnter, dungeon_room_index, dungeon_room_index_prev, 0);
 }
 
 void Dungeon_CheckAdjacentRoomsForOpenDoors(int idx, int room) {  // 81b759
@@ -4288,9 +4295,9 @@ void Dungeon_HandleRoomTags() {  // 81c2fd
     if (enhanced_features0 & kFeatures0_MiscBugFixes && submodule_index != 0)
       return;
 
-    g_ram[14] = 0;
+    BYTE(R14) = 0;
     kDungTagroutines[dung_hdr_tag[0]](0);
-    g_ram[14] = 1;
+    BYTE(R14) = 1;
     kDungTagroutines[dung_hdr_tag[1]](1);
   }
   flag_skip_call_tag_routines = 0;
@@ -4584,9 +4591,13 @@ void RoomTag_GetHeartForPrize(int k) {  // 81c709
   if (!(dung_savegame_state_bits & 0x8000))
     return;
   int t = savegame_is_darkworld ? link_has_crystals : link_which_pendants;
-  if (!(t & kDungeonCrystalPendantBit[BYTE(cur_palace_index_x2) >> 1])) {
+  int dungeon = BYTE(cur_palace_index_x2) >> 1;
+  if (!(t & kDungeonCrystalPendantBit[dungeon])) {
     byte_7E04C2 = 128;
-    if (Ancilla_SpawnFallingPrize(kBossFinishedFallingItem[BYTE(cur_palace_index_x2) >> 1]) < 0)
+    uint8 prize = ModSeedImport_PrizeItem(dungeon, 0);
+    if (prize != 0)
+      ModSeedImport_SetPrizeItem(prize);
+    if (Ancilla_SpawnFallingPrize(kBossFinishedFallingItem[dungeon]) < 0)
       return; // Zelda bugfix. Price won't spawn if we're out of ancillas
   }
   dung_hdr_tag[k] = 0;
@@ -5402,7 +5413,7 @@ void Dungeon_ClearAwayExplodingWall() {  // 81d6c1
     return;
 
   word_7E045E = 0;
-  g_ram[12] = 0;
+  BYTE(R12) = 0;
   door_animation_step_indicator = 0;
   dung_cur_door_idx = dung_unk_blast_walls_3;
   int dsto = (dung_door_tilemap_address[dung_unk_blast_walls_3 >> 1] -= 2) >> 1;
@@ -5489,7 +5500,8 @@ void RoomDraw_16x16Single(uint8 index) {  // 81d828
 
 void PushBlock_CheckForPit(uint8 y) {  // 81d8d4
   y >>= 1;
-  if (!(dung_object_tilemap_pos[y] & 0x4000))
+  if (!(dung_object_tilemap_pos[y] & 0x4000) &&
+      MOD_DECIDE(kModDecide_BlockAlreadyPushed, true, y))
     dung_flag_movable_block_was_pushed ^= 1;
 
   int p = (dung_object_tilemap_pos[y] & 0x3fff) >> 1;
@@ -5562,7 +5574,9 @@ uint8 ThievesAttic_DrawLightenedHole(uint16 pos6, uint16 a, Point16U *pt) {  // 
 uint8 HandleItemTileAction_Dungeon(uint16 x, uint16 y) {  // 81dabb
   if (!(link_item_in_hand & 2)) {
     if (!(enhanced_features0 & kFeatures0_BreakPotsWithSword) ||
-        button_b_frames == 0 || link_sword_type == 1)
+        button_b_frames == 0 ||
+        !MOD_DECIDE(kModDecide_PotBreakSwordLevel, link_sword_type != 1,
+                    link_sword_type))
       return 0;
   }
   uint16 pos = (y & 0x1f8) * 8 + x + (link_is_on_lower_level ? 0x1000 : 0);
@@ -5739,6 +5753,7 @@ uint8 OpenChestForItem(uint8 tile, int *chest_position) {  // 81eb66
       chest_room = *(uint16 *)chest_data;
       if ((chest_room & 0x7fff) == dungeon_room_index && --chest_idx < 0) {
         data = chest_data[2];
+        data = ModSeedImport_ChestItem(dungeon_room_index, chest_idx_org, data);
         if (chest_room & 0x8000) {
           if (!(link_bigkey & kUpperBitmasks[cur_palace_index_x2 >> 1])) {
             dialogue_message_index = 0x7a;
@@ -6406,7 +6421,8 @@ void Dungeon_ApproachFixedColor_variable(uint8 a) {  // 81fec1
 }
 
 void Module_PreDungeon() {  // 82821e
-  sound_effect_ambient = 5;
+  if (!EmuSeedRomActive())
+    sound_effect_ambient = 5;  // JP leaves the ambient alone here
   sound_effect_1 = 0;
   dungeon_room_index = 0;
   dungeon_room_index_prev = 0;
@@ -6777,7 +6793,7 @@ void Dungeon_ResetTorchBackgroundAndPlayerInner() {  // 828b0c
     link_auxiliary_state = 0;
     link_incapacitated_timer = 0;
     link_actual_vel_z = 0xff;
-    g_ram[0xc7] = 0xff;
+    scratch_c7 = 0xff;
     link_delay_timer_spin_attack = 0;
     link_speed_setting = 0;
     swimcoll_var5[0] &= ~0xff;
@@ -7463,6 +7479,10 @@ void Module07_0F_01_OperateSpotlight() {  // 829334
     TMW_copy = 0;
     TSW_copy = 0;
     subsubmodule_index = 0;
+    if (EmuSeedRomActive()) {
+      // z3r hook $A4:C1B2 at the end of the Sanctuary landing.
+      sound_effect_ambient = 5;
+    }
     if (queued_music_control != 0xff)
       music_control = queued_music_control;
   }
@@ -8005,6 +8025,7 @@ void HandleEdgeTransitionMovementSouth_DownBy16() {  // 82b76e
 }
 
 void Dung_HandleExitToOverworld() {  // 82b7ae
+  SeedOracle_JpScreenTransition();  // z3r hook $A4:89F3
   SaveDungeonKeys();
   SaveQuadrantsToSram();
   saved_module_for_menu = 8;
@@ -8428,7 +8449,10 @@ void Dungeon_LoadEntrance() {  // 82d8b3
 
   memset(memorized_tile_addr, 0, 0x100);
   memset(pots_revealed_in_room, 0, 0x280);
+  // z3r OnDungeonEntrance replaces exactly this store to $7EC172
+  // ($82:D8C7 in the JP ROM). cur_palace_index_x2 and which_entrance are set.
   orange_blue_barrier_state = 0;
+  MOD_EMIT(kModEv_DungeonEnter, cur_palace_index_x2, which_entrance, 0);
   byte_7E04BC = 0;
 }
 

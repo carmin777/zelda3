@@ -32,6 +32,6 @@ jobs:
     - name: Install dependencies for Mac
       if: ${{ matrix.name == 'Mac' }}
       run: |
-        brew install sdl2 coreutils
+        brew install sdl2
     - name: Build
-      run: make -j$(nproc) zelda3
+      run: make -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu) zelda3

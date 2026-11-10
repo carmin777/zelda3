@@ -1,5 +1,6 @@
 #include "messaging.h"
 #include "zelda_rtl.h"
+#include "zelda_cpu_infra.h"
 #include "variables.h"
 #include "snes/snes_regs.h"
 #include "dungeon.h"
@@ -14,6 +15,11 @@
 #include "sprite.h"
 #include "player_oam.h"
 #include "attract.h"
+#include "mod/events.h"
+#include "mod/game_over_text.h"
+#include "mod/hooks.h"
+#include "mod/lua_save.h"
+#include "mod/seed_oracle.h"
 #include "nmi.h"
 #include "assets.h"
 
@@ -255,6 +261,34 @@ const uint8 *GetLightOverworldTilemap() {
 }
 
 void SaveGameFile() {  // 80894a
+  if (EmuSeedRomActive()) {
+    // z3r $80:894A/$8998/$899C: always save to slot 0, append the extended
+    // save at $7F:6000, checksum the whole 0x14FE-byte image, and keep the
+    // backup at SRAM $4000. The vanilla WRAM checksum/mirror writes are
+    // replaced by this hook.
+    memcpy(g_zenv.sram, save_dung_info, 0x500);
+    memcpy(g_zenv.sram + 0x500, g_ram + 0x16000, 0x1000);
+    // $A4:B198 uses a 16-bit ADC chain: the carry of each addition is
+    // fed into the next one, so this is not the same as dropping it.
+    uint16 sum = 0;
+    uint32 carry = 0;
+    for (int i = 0; i < 0x4fe; i += 2) {
+      uint32 t = sum + WORD(g_zenv.sram[i]) + carry;
+      sum = t & 0xffff;
+      carry = t >> 16;
+    }
+    for (int i = 0; i < 0x1000; i += 2) {
+      uint32 t = sum + WORD(g_zenv.sram[0x500 + i]) + carry;
+      sum = t & 0xffff;
+      carry = t >> 16;
+    }
+    WORD(g_zenv.sram[0x4fe]) = 0x5a5a - sum;
+    memcpy(g_zenv.sram + 0x4000, g_zenv.sram, 0x1500);
+    ZeldaWriteSram();
+    MOD_EMIT(kModEv_SramSave, 2, 0, 0);
+    LuaSave_WriteSlot(0);
+    return;
+  }
   int offs = ((srm_var1 >> 1) - 1) * 0x500;
   memcpy(g_zenv.sram + offs, save_dung_info, 0x500);
   memcpy(g_zenv.sram + offs + 0xf00, save_dung_info, 0x500);
@@ -265,6 +299,8 @@ void SaveGameFile() {  // 80894a
   WORD(g_zenv.sram[offs + 0x4fe]) = t;
   WORD(g_zenv.sram[offs + 0x4fe + 0xf00]) = t;
   ZeldaWriteSram();
+  MOD_EMIT(kModEv_SramSave, srm_var1, 0, 0);
+  LuaSave_WriteSlot((srm_var1 >> 1) - 1);
 }
 
 void TransferMode7Characters() {  // 80e399
@@ -541,28 +577,28 @@ void Animate_GAMEOVER_Letters() {  // 88f4ca
 }
 
 void GameOverText_SweepLeft() {  // 88f4f6
-  static const uint8 kGameOverText_Tab1[8] = {0x40, 0x50, 0x60, 0x70, 0x88, 0x98, 0xa8, 0x40};
+  int n = kGameOverTextLetterCount[0];
 
   int k = flag_for_boomerang_in_place;
   cur_object_index = k;
   ancilla_x_vel[k] = 0x80;
   Ancilla_MoveX(k);
-  if (Ancilla_GetX(k) < kGameOverText_Tab1[k]) {
-    ancilla_x_lo[k] = kGameOverText_Tab1[k];
+  if (Ancilla_GetX(k) < kGameOverTextTab1[k]) {
+    ancilla_x_lo[k] = kGameOverTextTab1[k];
     flag_for_boomerang_in_place = ++k;
-    if (k == 8) {
-      flag_for_boomerang_in_place = 7;
+    if (k == n) {
+      flag_for_boomerang_in_place = n - 1;
       ancilla_type[0]++;
       hookshot_effect_index = 0;
       sound_effect_2 = 38;
       goto draw;
     }
   }
-  if (k == 7) {
-    int j = 6;
+  if (k == n - 1) {
+    int j = n - 2;
     while (j != hookshot_effect_index)
       ancilla_x_lo[j--] = ancilla_x_lo[k];
-    if (Ancilla_GetX(k) < kGameOverText_Tab1[hookshot_effect_index])
+    if (Ancilla_GetX(k) < kGameOverTextTab1[hookshot_effect_index])
       hookshot_effect_index--;
   }
 draw:
@@ -570,16 +606,16 @@ draw:
 }
 
 void GameOverText_UnfurlRight() {  // 88f56d
-  static const uint8 kGameOverText_Tab2[8] = {0x58, 0x60, 0x68, 0x70, 0x88, 0x90, 0x98, 0xa0};
+  int n = kGameOverTextLetterCount[0];
 
   int k = flag_for_boomerang_in_place, end;
   cur_object_index = k;
   ancilla_x_vel[k] = 0x60;
   Ancilla_MoveX(k);
   int j = hookshot_effect_index;
-  if (ancilla_x_lo[k] >= kGameOverText_Tab2[j]) {
-    ancilla_x_lo[j] = kGameOverText_Tab2[j];
-    if (++hookshot_effect_index == 8) {
+  if (ancilla_x_lo[k] >= kGameOverTextTab2[j]) {
+    ancilla_x_lo[j] = kGameOverTextTab2[j];
+    if (++hookshot_effect_index == n) {
       submodule_index++;
       ancilla_type[0]++;
       goto draw;
@@ -705,6 +741,8 @@ void GameOver_SplatAndFade() {  // 89f3de
   }
   index_of_changable_dungeon_objs[0] = 0;
   index_of_changable_dungeon_objs[1] = 0;
+  if (EmuSeedRomActive())
+    SeedOracle_JpLoadFileSelectTilemap();  // JP $89:F430 -> $0E:F572
   nmi_subroutine_index = 22;
   nmi_disable_core_updates = 22;
   submodule_index++;
@@ -775,10 +813,19 @@ do_inc:
 }
 
 void Death_Func15(bool count_as_death) {  // 89f50f
-  music_control = 0xf1;
+  if (EmuSeedRomActive())
+    g_ram[0x12B] = 0xf1;  // z3r $89:F511 uses the MSU override byte
+  else
+    music_control = 0xf1;
   if (player_is_indoors)
     Dungeon_FlagRoomData_Quadrants();
   AdjustLinkBunnyStatus();
+  if (EmuSeedRomActive()) {
+    // z3r $89:F520 -> $A4:87E2/$A0:B212: count a real death while the
+    // stats are not locked and health is zero.
+    if (!*(uint16 *)(g_ram + 0xF443) && link_health_current == 0)
+      g_ram[0xF449]++;
+  }
   if (sram_progress_indicator < 3) {
     savegame_is_darkworld = 0;
     if (!link_item_moon_pearl)
@@ -796,22 +843,31 @@ void Death_Func15(bool count_as_death) {  // 89f50f
   if (i != 0xff)
     link_keys_earned_per_dungeon[(i == 2 ? 0 : i) >> 1] = link_num_keys;
   Sprite_ResetAll();
-  if (death_var2 == 0xffff && (!(enhanced_features0 & kFeatures0_MiscBugFixes) || count_as_death))
+  if (EmuSeedRomActive()) {
+    // JP $89:F58E/$F597 uses $7EF401/$7EF3FF (the US offsets are +4/+4).
+    if (*(uint16 *)(g_ram + 0xF401) == 0xffff &&
+        (!(enhanced_features0 & kFeatures0_MiscBugFixes) || count_as_death))
+      (*(uint16 *)(g_ram + 0xF3FF))++;
+  } else if (death_var2 == 0xffff &&
+             (!(enhanced_features0 & kFeatures0_MiscBugFixes) || count_as_death)) {
     death_save_counter++;
+  }
   death_var5++;
   if (subsubmodule_index != 1) {
-    if (!player_is_indoors)
-      goto outdoors;
-
-    if (follower_indicator != 1 && BYTE(cur_palace_index_x2) != 255) {
-      death_var4 = 0;
-    } else {
-      queued_music_control = 0;
-      player_is_indoors = 0;
-    outdoors:
-      if (savegame_is_darkworld)
-        dungeon_room_index = 32;
+    bool do_outdoors = false;
+    if (!player_is_indoors) {
+      do_outdoors = true;
+    } else if (follower_indicator != 1) {
+      if (BYTE(cur_palace_index_x2) != 255) {
+        death_var4 = 0;
+      } else {
+        queued_music_control = 0;
+        player_is_indoors = 0;
+        do_outdoors = true;
+      }
     }
+    if (do_outdoors && savegame_is_darkworld)
+      dungeon_room_index = 32;
 
     if (sram_progress_indicator) {
       if (subsubmodule_index == 0)
@@ -822,13 +878,20 @@ void Death_Func15(bool count_as_death) {  // 89f50f
     } else {
       uint8 slot = srm_var1;
       int offs = kSrmOffsets[(slot >> 1) - 1];
-      WORD(g_ram[0]) = offs;
+      R0 = offs;
       death_var5 = 0;
       CopySaveToWRAM();
     }
   } else {
-    if (sram_progress_indicator)
+    // Quit branch: reached by "save and quit" from the death menu and by
+    // Module17_SaveAndQuit. z3r OnQuit hooks this point right after the
+    // optional SaveGameFile ($89:F60B in the JP ROM).
+    bool quit_saved = sram_progress_indicator != 0;
+    if (quit_saved)
       SaveGameFile();
+    MOD_EMIT(kModEv_Quit, quit_saved, 0, 0);
+    if (quit_saved)
+      LuaSave_WriteSlot((srm_var1 >> 1) - 1);
     TM_copy = 16;
     player_is_indoors = 0;
     Death_Func31();
@@ -852,12 +915,19 @@ void Death_Func15(bool count_as_death) {  // 89f50f
 }
 
 void GameOver_AnimateChoiceFairy() {  // 89f67a
+  if (EmuSeedRomActive()) {
+    // JP $89:F674: the death-menu fairy sits at x=$3C and y=$81/$91/$A1.
+    SetOamPlain(&oam_buf[0x14], 0x3c, 0x81 + subsubmodule_index * 0x10,
+                kDeath_SprChar0[frame_counter >> 3 & 1], 0x78, 2);
+    return;
+  }
   SetOamPlain(&oam_buf[0x14], 0x34, kDeath_SprY0[subsubmodule_index], kDeath_SprChar0[frame_counter >> 3 & 1], 0x78, 2);
 }
 
 void GameOver_InitializeRevivalFairy() {  // 89f6a4
   ConfigureRevivalAncillae();
-  link_hearts_filler = 56;
+  link_hearts_filler = (uint8)MOD_FILTER(kModFilter_FairyReviveHealth, 56,
+                                        link_health_capacity);
   submodule_index += 1;
   overworld_map_state = 0;
 }
@@ -1641,8 +1711,8 @@ void Module0E_03_01_03_DrawRooms() {  // 8ae384
   DungeonMap_DrawBorderForRooms(0x300, ~0x1000);
   DungeonMap_DrawDungeonLayout(0x300);
   dungmap_cur_floor++;
-  WORD(g_ram[6]) = 0;
-  WORD(g_ram[10]) = 0;
+  WORD(A6) = 0;
+  R10 = 0;
   nmi_subroutine_index = 8;
   BYTE(nmi_load_target_addr) = 0x22;
   dungmap_init_state++;
@@ -1857,7 +1927,7 @@ void DungeonMap_HandleFloorSelect() {  // 8ae986
   if (r2 + r3 < 3 || dungmap_var2 || !(joypad1H_last & 0xc))
     return;
   dungmap_cur_floor &= 0xff;
-  uint16 r6 = WORD(g_ram[6]);
+  uint16 r6 = WORD(A6);
   if (joypad1H_last & 8) {
     if (r2 - 1 == dungmap_cur_floor)
       return;
@@ -1873,19 +1943,19 @@ void DungeonMap_HandleFloorSelect() {  // 8ae986
   DungeonMap_DrawBorderForRooms(r6, ~0x1000);
   DungeonMap_DrawDungeonLayout(r6);
   dungmap_var2++;
-  WORD(g_ram[10]) = joypad1H_last;
+  R10 = joypad1H_last;
   int x = joypad1H_last >> 3 & 1;
   dungmap_var4 = BG2VOFS_copy2 + kDungMap_Tab26[x];
   if (!x) {
     r6 = (r6 - 0x300) & 0xfff;
     dungmap_cur_floor++;
   }
-  WORD(g_ram[6]) = r6;
+  WORD(A6) = r6;
   nmi_subroutine_index = 8;
 }
 
 void DungeonMap_ScrollFloors() {  // 8aea7f
-  int x = WORD(g_ram[10]) >> 3 & 1;
+  int x = R10 >> 3 & 1;
   dungmap_var5 += kDungMap_Tab39[x];
   dungmap_var8 += kDungMap_Tab39[x];
   BG2VOFS_copy2 += kDungMap_Tab40[x];
@@ -2076,13 +2146,17 @@ void ToggleStarTilesAndAdvance() {  // 8aefc9
 }
 
 void Death_InitializeGameOverLetters() {  // 8afe20
+  int n = kGameOverTextLetterCount[0];
+
   flag_for_boomerang_in_place = 0;
-  for (int i = 0; i < 8; i++) {
+  for (int i = 0; i < n; i++) {
     ancilla_x_lo[i] = 0xb0;
     ancilla_x_hi[i] = 0;
   }
   ancilla_type[0] = 1;
-  hookshot_effect_index = 6;
+  // Both the US and PT-BR ROMs start the back-fill index at 6. Keep it in
+  // range for shorter custom letter sets; N=8 and N=9 still use exactly 6.
+  hookshot_effect_index = n - 2 < 6 ? n - 2 : 6;
 }
 
 void CopySaveToWRAM() {  // 8ccfbb
@@ -2093,7 +2167,7 @@ void CopySaveToWRAM() {  // 8ccfbb
   bird_travel_y_lo[k] = 0;
   birdtravel_var1[k] = 0;
 
-  memcpy(save_dung_info, &g_zenv.sram[WORD(g_ram[0])], 0x500);
+  memcpy(save_dung_info, &g_zenv.sram[R0], 0x500);
 
   bg_tile_animation_countdown = 7;
   word_7EC013 = 7;
@@ -2116,6 +2190,11 @@ void CopySaveToWRAM() {  // 8ccfbb
   which_entrance = 0;
   nmi_disable_core_updates = 0;
   hud_palette = 0;
+  if (EmuSeedRomActive()) {
+    memcpy(g_ram + 0x16000, g_zenv.sram + 0x500, 0x18);
+    WORD(g_zenv.sram[0x1FFE]) = 4;
+  }
+  MOD_EMIT(kModEv_SramLoad, R0, 0, 0);
 }
 
 void RenderText() {  // 8ec440
@@ -2124,6 +2203,25 @@ void RenderText() {  // 8ec440
 
 void RenderText_PostDeathSaveOptions() {  // 8ec455
   dialogue_message_index = 3;
+  if (EmuSeedRomActive()) {
+    // JP $8E:EE25 calls $EE63, which reloads the message buffer for the
+    // new index before the five render passes. The US path relies on the
+    // buffer already holding message 3.
+    Text_Initialize_initModuleStateLoop();
+    RenderText_SetDefaultWindowPosition();
+    SeedOracle_JpLoadMessageBuffer();
+    memset(messaging_buf, 0, 0x780);
+    dialogue_msg_src_offs = 0;
+    text_next_position = 0;
+    dialogue_msg_read_pos = 0;
+    nmi_subroutine_index = 2;
+    nmi_disable_core_updates = 2;
+    text_msgbox_topleft = 0x61e8;
+    text_render_state = 2;
+    for (int i = 0; i < 5; i++)
+      Text_Render();
+    return;
+  }
   Text_Initialize_initModuleStateLoop();
   text_msgbox_topleft = 0x61e8;
   text_render_state = 2;
@@ -2132,6 +2230,24 @@ void RenderText_PostDeathSaveOptions() {  // 8ec455
 }
 
 void Text_Initialize() {  // 8ec483
+  if (EmuSeedRomActive()) {
+    // JP $8E:EE10/$EE53: copy the initialization words, choose the window
+    // position, expand the message and clear the text buffer.  The JP
+    // path does not call Attract_DecompressStoryGFX or the US loader.
+    if (main_module_index == 20)
+      ResetHUDPalettes4and5();
+    SeedOracle_JpLoadMessageFont();
+    Text_Initialize_initModuleStateLoop();
+    RenderText_SetDefaultWindowPosition();
+    SeedOracle_JpLoadMessageBuffer();
+    memset(messaging_buf, 0, 0x780);
+    dialogue_msg_src_offs = 0;
+    text_next_position = 0;
+    dialogue_msg_read_pos = 0;
+    nmi_subroutine_index = 2;
+    nmi_disable_core_updates = 2;
+    return;
+  }
   if (main_module_index == 20)
     ResetHUDPalettes4and5();
   Attract_DecompressStoryGFX();
@@ -2140,10 +2256,13 @@ void Text_Initialize() {  // 8ec483
 
 void Text_Initialize_initModuleStateLoop() {  // 8ec493
   memcpy(&text_msgbox_topleft_copy, kText_InitializationData, 32);
+  if (EmuSeedRomActive())
+    return;
   Text_InitVwfState();
   RenderText_SetDefaultWindowPosition();
   text_tilemap_cur = 0x3980;
   Text_LoadCharacterBuffer();
+  MOD_EMIT(kModEv_DialogueOpen, dialogue_message_index, 0, 0);
   memset(messaging_buf, 0, 0x7e0);
   nmi_subroutine_index = 2;
   nmi_disable_core_updates = 2;
@@ -2347,6 +2466,8 @@ void RenderText_Draw_Border() {  // 8ec8ea
   for(int i = 0; i != 6; i++)
     d = RenderText_DrawBorderRow(d, 6);
   d = RenderText_DrawBorderRow(d, 12);
+  if (EmuSeedRomActive())
+    *d = 0xffff;
   nmi_load_bg_from_vram = 1;
   text_render_state = 2;
 }
@@ -2361,15 +2482,21 @@ void RenderText_Draw_BorderIncremental() {  // 8ec919
   case 0:
     RenderText_DrawBorderInitialize();
     d = RenderText_DrawBorderRow(d, 0);
+    if (EmuSeedRomActive())
+      *d = 0xffff;
     text_incremental_state++;
     break;
   case 1:
     d = RenderText_DrawBorderRow(d, 6);
+    if (EmuSeedRomActive())
+      *d = 0xffff;
     text_incremental_state++;
     break;
   case 2:
     text_render_state = 2;
     d = RenderText_DrawBorderRow(d, 12);
+    if (EmuSeedRomActive())
+      *d = 0xffff;
     text_incremental_state++;
     break;
   }
@@ -2381,6 +2508,10 @@ void RenderText_Draw_CharacterTilemap() {  // 8ec97d
 }
 
 void RenderText_Draw_MessageCharacters() {  // 8ec984
+  if (EmuSeedRomActive()) {
+    SeedOracle_JpRenderMessageCharacters();
+    return;
+  }
 RESTART:;
   uint32 cmd = Text_DecodeCmd(messaging_text_buffer[dialogue_msg_read_pos],
       &messaging_text_buffer[dialogue_msg_read_pos + 1]);
@@ -2504,6 +2635,7 @@ void RenderText_Draw_Finish() {  // 8eca35
   d[2] = 0x387F;
   d[3] = 0xffff;
   nmi_load_bg_from_vram = 1;
+  MOD_EMIT(kModEv_DialogueClose, dialogue_message_index, 0, 0);
   messaging_module = 0;
   submodule_index = 0;
   main_module_index = saved_module_for_menu;
@@ -2646,7 +2778,7 @@ void RenderText_DrawSelectedYItem() {  // 8ece14
   int item = choice_in_multiselect_box;
   const uint16 *p = Hud_GetItemBoxPtr(item);
   p += ((item == 3 || item == 32) ? 1 : (&link_item_bow)[item]) * 4;
-  uint8 *vwf300 = &g_ram[0x1300];
+  uint8 *vwf300 = vwf_render_buffer;
   memcpy(vwf300 + 0xc2, p, 4);
   memcpy(vwf300 + 0xec, p + 2, 4);
 }
@@ -2750,6 +2882,18 @@ void RenderText_DrawBorderInitialize() {  // 8ed29c
 }
 
 uint16 *RenderText_DrawBorderRow(uint16 *d, int y) {  // 8ed2ab
+  if (EmuSeedRomActive()) {
+    // JP $8E:FBF7: marker $2D00 and 21 middle tiles, no terminator.
+    y >>= 1;
+    *d++ = swap16(text_msgbox_topleft_copy);
+    text_msgbox_topleft_copy += 0x20;
+    *d++ = 0x2D00;
+    *d++ = kText_BorderTiles[y];
+    for (int i = 0; i < 21; i++)
+      *d++ = kText_BorderTiles[y + 1];
+    *d++ = kText_BorderTiles[y + 2];
+    return d;
+  }
   y >>= 1;
   *d++ = swap16(text_msgbox_topleft_copy);
   text_msgbox_topleft_copy += 0x20;
@@ -2763,17 +2907,42 @@ uint16 *RenderText_DrawBorderRow(uint16 *d, int y) {  // 8ed2ab
 }
 
 void Text_BuildCharacterTilemap() {  // 8ed2ec
-  uint16 *vwf300 = (uint16 *)&g_ram[0x1300];
+  uint16 *vwf300 = (uint16 *)vwf_render_buffer;
+  if (EmuSeedRomActive()) {
+    // JP $8E:FC38: start at the message tilemap base and fill 120 entries.
+    text_tilemap_cur = (0x387F & 0xFF00) | 0x0180;
+    for (int i = 0; i < 120; i++)
+      vwf300[i] = text_tilemap_cur++;
+    RenderText_Refresh();
+    return;
+  }
   for (int i = 0; i < 126; i++)
     vwf300[i] = text_tilemap_cur++;
   RenderText_Refresh();
 }
 
 void RenderText_Refresh() {  // 8ed307
+  if (EmuSeedRomActive()) {
+    // JP $8E:FC5F: six rows of 20 entries, marker $2700.
+    RenderText_DrawBorderInitialize();
+    text_msgbox_topleft_copy += 0x22;
+    uint16 *d = vram_upload_data;
+    uint16 *s = (uint16 *)vwf_render_buffer;
+    for (int j = 0; j != 6; j++) {
+      *d++ = swap16(text_msgbox_topleft_copy);
+      text_msgbox_topleft_copy += 0x20;
+      *d++ = 0x2700;
+      for (int i = 0; i != 20; i++)
+        *d++ = *s++;
+    }
+    *d = 0xffff;
+    nmi_load_bg_from_vram = 1;
+    return;
+  }
   RenderText_DrawBorderInitialize();
   text_msgbox_topleft_copy += 0x21;
   uint16 *d = vram_upload_data;
-  uint16 *s = (uint16 *)&g_ram[0x1300];
+  uint16 *s = (uint16 *)vwf_render_buffer;
   for (int j = 0; j != 6; j++) {
     *d++ = swap16(text_msgbox_topleft_copy);
     text_msgbox_topleft_copy += 0x20;

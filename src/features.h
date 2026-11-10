@@ -46,16 +46,26 @@ enum {
   kFeatures0_SwitchLRLimit = 32768,
 
   kFeatures0_DimFlashes = 65536,
+
+  // 24-slot inventory/menu layout (six columns by four rows, separate
+  // bottles and a permanent shovel slot). Changes only HUD state.
+  kFeatures0_NewStyleInventory = 131072,
+
+  // Horizontal magic meter and the in-menu play timer introduced by Redux.
+  kFeatures0_HorizontalMagicBar = 262144,
+  kFeatures0_MenuTimer = 524288,
+
+  // Redux in-game HUD layout: hearts at the top-left, the horizontal magic
+  // bar below them, the counters shifted right and the item box at the
+  // top-right. Independent from the 24-slot menu.
+  kFeatures0_ReduxHud = 1048576,
+
+  // Behavior rules that every ALttPR seed expects from the z3randomizer:
+  // fake flippers, bonk recoil, jump-down-ledge and the stat counters.
+  kFeatures0_Z3rRules = 2097152,
 };
 
-#define enhanced_features0 (*(uint32*)(g_ram+0x64c))
-#define msu_curr_sample (*(uint32*)(g_ram+0x650))
-#define msu_volume (*(uint8*)(g_ram+0x654))
-#define msu_track (*(uint8*)(g_ram+0x655))
-#define hud_inventory_order ((uint8*)(g_ram + 0x225)) // 4x6 bytes
-#define hud_cur_item_x (*(uint8*)(g_ram+0x656))
-#define hud_cur_item_l (*(uint8*)(g_ram+0x657))
-#define hud_cur_item_r (*(uint8*)(g_ram+0x658))
+// The named macros for these feature RAM locations live in variables.h.
 
 
 

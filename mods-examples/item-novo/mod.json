@@ -1,0 +1,10 @@
+{
+  "id": "item-novo",
+  "name": "Item novo: pena",
+  "version": "1.0.0",
+  "api": 1,
+  "enabled": true,
+  "priority": 0,
+  "permissions": ["state_write"],
+  "script": "main.lua"
+}

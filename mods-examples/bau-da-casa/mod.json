@@ -1,0 +1,10 @@
+{
+  "id": "bau-da-casa",
+  "name": "Bau da casa do Link",
+  "version": "1.0.0",
+  "api": 1,
+  "enabled": true,
+  "priority": 0,
+  "depends": [],
+  "patches": ["patches/bau.json"]
+}

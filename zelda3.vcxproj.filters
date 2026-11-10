@@ -34,6 +34,9 @@
     <ClCompile Include="third_party\gl_core\gl_core_3_1.c">
       <Filter>third_party</Filter>
     </ClCompile>
+    <ClCompile Include="third_party\cjson\cJSON.c">
+      <Filter>third_party</Filter>
+    </ClCompile>
     <ClCompile Include="third_party\opus-1.3.1-stripped\opus_decoder_amalgam.c">
       <Filter>third_party\Opus</Filter>
     </ClCompile>
@@ -188,6 +191,30 @@
       <Filter>Zelda</Filter>
     </ClCompile>
     <ClCompile Include="src\misc.c">
+      <Filter>Zelda</Filter>
+    </ClCompile>
+    <ClCompile Include="src\mod\asset_names.c">
+      <Filter>Zelda</Filter>
+    </ClCompile>
+    <ClCompile Include="src\mod\draw.c">
+      <Filter>Zelda</Filter>
+    </ClCompile>
+    <ClCompile Include="src\mod\events.c">
+      <Filter>Zelda</Filter>
+    </ClCompile>
+    <ClCompile Include="src\mod\mods.c">
+      <Filter>Zelda</Filter>
+    </ClCompile>
+    <ClCompile Include="src\mod\nwa_server.c">
+      <Filter>Zelda</Filter>
+    </ClCompile>
+    <ClCompile Include="src\mod\state_table.c">
+      <Filter>Zelda</Filter>
+    </ClCompile>
+    <ClCompile Include="src\mod\lua_api.c">
+      <Filter>Zelda</Filter>
+    </ClCompile>
+    <ClCompile Include="src\mod\lua_script.c">
       <Filter>Zelda</Filter>
     </ClCompile>
     <ClCompile Include="src\opengl.c">
@@ -388,6 +415,33 @@
       <Filter>Zelda</Filter>
     </ClInclude>
     <ClInclude Include="src\misc.h">
+      <Filter>Zelda</Filter>
+    </ClInclude>
+    <ClInclude Include="third_party\cjson\cJSON.h">
+      <Filter>third_party</Filter>
+    </ClInclude>
+    <ClInclude Include="src\mod\asset_names.h">
+      <Filter>Zelda</Filter>
+    </ClInclude>
+    <ClInclude Include="src\mod\draw.h">
+      <Filter>Zelda</Filter>
+    </ClInclude>
+    <ClInclude Include="src\mod\events.h">
+      <Filter>Zelda</Filter>
+    </ClInclude>
+    <ClInclude Include="src\mod\mods.h">
+      <Filter>Zelda</Filter>
+    </ClInclude>
+    <ClInclude Include="src\mod\nwa_server.h">
+      <Filter>Zelda</Filter>
+    </ClInclude>
+    <ClInclude Include="src\mod\state_table.h">
+      <Filter>Zelda</Filter>
+    </ClInclude>
+    <ClInclude Include="src\mod\lua_internal.h">
+      <Filter>Zelda</Filter>
+    </ClInclude>
+    <ClInclude Include="src\mod\lua_script.h">
       <Filter>Zelda</Filter>
     </ClInclude>
     <ClInclude Include="src\nmi.h">

@@ -1,0 +1,8 @@
+[
+  {
+    "asset": "kDungeonRoomChests",
+    "offset": 411,
+    "expect": "04 01 12",
+    "bytes": "04 01 02"
+  }
+]

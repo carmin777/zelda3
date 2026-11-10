@@ -1,0 +1,45 @@
+Loaded LoROM rom
+"THE LEGEND OF ZELDA  "
+*** Replaying slot 264
+compare: on
+frame 1000 9620058a
+frame 2000 01ee4437
+frame 3000 f6155b96
+frame 4000 f5636a9a
+frame 5000 c1a05d85
+frame 6000 d7ecb179
+frame 7000 1f11d966
+frame 8000 b4549f46
+frame 9000 894a590f
+frame 10000 969249d1
+frame 11000 e79fba51
+frame 12000 2cf11302
+frame 13000 4b881bec
+frame 14000 66d83938
+frame 15000 88ac1b19
+frame 16000 35573276
+frame 17000 2ab23b37
+Wtf is R6
+frame 18000 bd488da7
+frame 19000 18d65f3c
+frame 20000 6ee0725d
+frame 21000 ec5e642b
+frame 22000 3e657d7a
+frame 23000 504de25c
+frame 24000 a85c852d
+frame 25000 ca6c1b99
+frame 26000 2da650a5
+frame 27000 1f1ede81
+frame 28000 163ee42f
+frame 29000 1bedfe6e
+frame 30000 503c38f2
+frame 31000 0ab64157
+frame 32000 5cc0a3da
+frame 33000 b50bddea
+frame 34000 ba1c8ce9
+frame 35000 1c54715b
+frame 36000 9a13d3c1
+frame 37000 1ec92f29
+frame 38000 40483ce3
+frame 39000 2d64174e
+final 39143 56e02fa7

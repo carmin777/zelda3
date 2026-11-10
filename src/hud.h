@@ -21,8 +21,10 @@ void Hud_RefreshIcon();
 uint8 CheckPalaceItemPosession();
 void Hud_FloorIndicator();
 void Hud_RemoveSuperBombIndicator();
+void Hud_LoadOverworldBlankTiles();
 void Hud_SuperBombIndicator();
 void Hud_RefillLogic();
+void Hud_TickMenuTimer();
 void Hud_Module_Run();
 void Hud_ClearTileMap();
 void Hud_Init();
@@ -58,5 +60,6 @@ void Hud_Rebuild();
 const uint16 *Hud_GetItemBoxPtr(int item);
 int GetCurrentItemButtonIndex();
 uint8 *GetCurrentItemButtonPtr(int i);
+bool Hud_IsItemButtonPressed(int item);
 
 void Hud_HandleItemSwitchInputs();

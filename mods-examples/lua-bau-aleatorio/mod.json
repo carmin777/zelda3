@@ -1,0 +1,9 @@
+{
+  "id": "lua-bau-aleatorio",
+  "name": "Bau aleatorio",
+  "version": "1.0.0",
+  "api": 1,
+  "enabled": true,
+  "priority": 0,
+  "script": "main.lua"
+}

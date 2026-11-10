@@ -1,0 +1,22 @@
+{
+  "id": "opcoes-redux",
+  "name": "Opções do Redux (classes A e E)",
+  "version": "1.0.0",
+  "api": 1,
+  "features": {
+    "TurnWhileDashing": true,
+    "CollectItemsWithSword": true,
+    "BreakPotsWithSword": true,
+    "MirrorToDarkworld": true,
+    "DisableLowHealthBeep": true,
+    "SkipIntroOnKeypress": true,
+    "MiscBugFixes": true,
+    "DimFlashes": true,
+    "ItemSwitchLR": true,
+    "CancelBirdTravel": true,
+    "NewStyleInventory": true,
+    "HorizontalMagicBar": true,
+    "MenuTimer": true,
+    "ReduxHud": true
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "id": "bau-yaml",
+  "name": "Bau da casa do Link (YAML)",
+  "version": "1.0.0",
+  "api": 1,
+  "enabled": true,
+  "priority": 0,
+  "depends": [],
+  "asset_overrides": {
+    "kDungeonRoomChests": "build/kDungeonRoomChests.bin"
+  },
+  "generated_overrides": [
+    "kDungeonRoomChests"
+  ]
+}

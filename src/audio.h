@@ -17,4 +17,11 @@ void ZeldaRestoreMusicAfterLoad_Locked(bool is_reset);
 void ZeldaSaveMusicStateToRam_Locked();
 void ZeldaPushApuState();
 
+// Local split-screen plays only player 1's audio. The audio callback must not
+// follow the per-frame instance switch, and player 2's APU writes must not
+// enter player 1's queue.
+struct SpcPlayer;
+void ZeldaSetAudioInstance(struct SpcPlayer *player);
+void ZeldaSetAudioWritesSuppressed(bool suppressed);
+
 #endif  // ZELDA3_AUDIO_H_

@@ -46,9 +46,18 @@ void HdmaSetup(uint32 addr6, uint32 addr7, uint8 transfer_unit, uint8 reg6, uint
 
 void ZeldaInitialize();
 void ZeldaReset(bool preserve_sram);
+// Selects which state recorder (key log / replay) is active. Slot 0 is the
+// normal single-player recorder; slot 1 is used by local split-screen.
+void ZeldaSelectStateRecorder(int slot);
+// Enables or disables the embedded-ROM oracle for the active instance. Local
+// split-screen gives the oracle to player 2 only, so player 1 runs C-only.
+void ZeldaSetEmuOracleEnabled(bool enabled);
 void ZeldaDrawPpuFrame(uint8 *pixel_buffer, size_t pitch, uint32 render_flags);
 void ZeldaRunFrameInternal(uint16 input, int run_what);
 bool ZeldaRunFrame(int input_state);
+// Applies the feature values chosen by active mods on top of the current RAM
+// value. Used while replaying because replay snapshots carry their own copy.
+void ZeldaApplyModFeatureOverrides(void);
 void LoadSongBank(const uint8 *p);
 void ZeldaApuLock();
 void ZeldaApuUnlock();
@@ -66,6 +75,14 @@ enum {
 };
 
 void SaveLoadSlot(int cmd, int which);
+bool ZeldaReplayFile(const char *path);
+bool ZeldaLoadFile(const char *path);
+bool ZeldaSaveReplayFile(const char *path);
+// Loads only the base snapshot of a replay into the active instance and leaves
+// it out of replay mode. Local split-screen uses this to put the other player
+// at the same starting point as the replaying player.
+bool ZeldaLoadReplayBaseFile(const char *path);
+bool ZeldaLoadReplayBaseRef(int which);
 void ZeldaWriteSram();
 void ZeldaReadSram();
 

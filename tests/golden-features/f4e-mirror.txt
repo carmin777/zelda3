@@ -1,0 +1,7 @@
+compare: off
+ev 42 ModuleChange 14 9 0
+ev 216 ModuleChange 9 14 0
+hook 236 Decide MirrorAllowed 1 -> 0 arg 64
+ev 268 ModuleChange 14 9 0
+ev 269 DialogueOpen 349 0 0
+final 399 f9a24ea7

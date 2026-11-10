@@ -1,0 +1,7 @@
+Revisão do F2: bom trabalho (cJSON conferido contra a tag v1.7.18, patches com limite certo). Dois problemas a corrigir antes do merge:
+
+1. **Contenção de caminhos.** Todo caminho vindo de mod.json ou de patches (link_sprite, asset_overrides, patches, e o futuro "script") deve ser relativo à pasta do mod. Recuse (mod desativado, mensagem clara) caminho absoluto (inclusive `C:\` e `\\` no Windows), qualquer componente `..`, e caminho vazio. Faça isso numa função única (ex.: `ModResolvePath(mod_dir, rel, err)`) usada por todos, para a F3 reaproveitar. Teste: um mod com `"link_sprite": "../../zelda3.sfc"` e outro com caminho absoluto, ambos recusados. Cole as saídas.
+
+2. **Tamanho no override inteiro.** Um override de tamanho diferente do asset original faz o código do jogo, que assume tabelas de tamanho fixo, ler fora do buffer. Regra: por padrão o arquivo precisa ter exatamente o tamanho do asset original; se não tiver, recuse com mensagem mostrando os dois tamanhos. Aceite também a forma objeto `"kNome": { "file": "x.bin", "allow_resize": true }` para quem sabe o que está fazendo (documente em MODS.md que redimensionar só é seguro em assets lidos por tamanho/índice, e que é por conta do autor). Teste: override com 1 byte a menos → recusado; com allow_resize → aceito. Cole as saídas.
+
+Depois: `make -j2` sem warnings, `tools/regress.sh` verde, repita o teste do bau-da-casa (ItemReceive 2), atualize MODS.md, commite e relate.

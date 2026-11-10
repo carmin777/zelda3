@@ -13,6 +13,12 @@
 #include "tile_detect.h"
 #include "sprite_main.h"
 #include "assets.h"
+#include "mod/events.h"
+#include "mod/hooks.h"
+#include "mod/shared_world.h"
+#include "mod/frame_desc.h"
+#include "mod/seed_oracle.h"
+#include "zelda_cpu_infra.h"
 static const uint16 kOamGetBufferPos_Tab0[6] = {0x171, 0x201, 0x31, 0xc1, 0x141, 0x1d1};
 static const uint16 kOamGetBufferPos_Tab1[48] = {
    0x30,  0x50,  0x80,  0xb0,  0xe0, 0x110, 0x140, 0x170, 0x1d0, 0x1d4, 0x1dc, 0x1e0, 0x1e4, 0x1ec, 0x1f0, 0x1f8,
@@ -300,7 +306,7 @@ static const int8 kPlayer_SetupActionHitBox_H[65] = {
 static const int8 kPlayer_SetupActionHitBox_Tab4[13] = {
   1, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1
 };
-static const uint8 kSprite_PrepAndDrawSingleLarge_Tab1[236] = {
+static const uint8 kSprite_PrepAndDrawSingleLarge_Tab1[256] = {
   200, 0, 107, 0, 0, 0, 0, 0, 0, 203, 0, 8, 10, 11, 0, 0,
   13, 0, 0, 86, 0, 0, 15, 17, 0, 19, 0, 0, 0, 0, 20, 0,
   21, 27, 0, 42, 42, 248, 0, 182, 0, 0, 0, 170, 0, 0, 28, 0,
@@ -316,8 +322,14 @@ static const uint8 kSprite_PrepAndDrawSingleLarge_Tab1[236] = {
   106, 0, 249, 215, 0, 0, 0, 216, 0, 0, 222, 227, 0, 0, 0, 235,
   0, 0, 0, 0, 0, 0, 244, 244, 29, 31, 31, 31, 32, 32, 32, 33,
   34, 35, 35, 37, 40, 106, 246, 41, 0, 0, 205, 206,
+  // [236..255]: bytes the 65816 reads past the 236-entry table when
+  // sprite_type ($0E20) is 236..255 (uint8 maximum).
+  0x8b,  // [236] = $86dbf0
+  0x4b, 0xab, 0x20, 0x10, 0xdc, 0xab, 0x6b, 0x8b,  // [237..244] = $86dbf1
+  0x4b, 0xab, 0x20, 0xef, 0xdc, 0xab, 0x6b, 0x00,  // [245..252] = $86dbf9
+  0x00, 0x01, 0x01,  // [253..255] = $86dc01
 };
-static const uint8 kSprite_PrepAndDrawSingleLarge_Tab2[251] = {
+static const uint8 kSprite_PrepAndDrawSingleLarge_Tab2[256] = {
   0xa0, 0xa2, 0xa0, 0xa2, 0x80, 0x82, 0x80, 0x82, 0xea, 0xec, 0x84, 0x4e, 0x61, 0xbd, 0x8c, 0x20,
   0x22, 0xc0, 0xc2, 0xe6, 0xe4, 0x82, 0xaa, 0x84, 0xac, 0x80, 0xa0, 0xca, 0xaf, 0x29, 0x39, 0xb,
   0x6e, 0x60, 0x62, 0x63, 0x4c, 0xea, 0xec, 0x24, 0x6b, 0x24, 0x22, 0x24, 0x26, 0x20, 0x30, 0x21,
@@ -334,6 +346,10 @@ static const uint8 kSprite_PrepAndDrawSingleLarge_Tab2[251] = {
   0xc0, 0xc8, 0xc4, 0xc6, 0xe2, 0xe0, 0xee, 0xae, 0xa0, 0x80, 0xee, 0xc0, 0xc2, 0xbf, 0x8c, 0xaa,
   0x86, 0xa8, 0xa6, 0x2c, 0x28, 6, 0xdf, 0xcf, 0xa9, 0x46, 0x46, 0xea, 0xc0, 0xc2, 0xe0, 0xe8,
   0xe2, 0xe6, 0xe4, 0xb, 0x8e, 0xa0, 0xec, 0xea, 0xe9, 0x48, 0x58,
+  // [251..255]: the 65816 index addition wraps at 256 and reads past this
+  // table into kSprite_PrepAndDrawSingleLarge_Tab1 ($86db04); these are the
+  // bytes it would see there.
+  0xc8, 0x00, 0x6b, 0x00, 0x00,  // $86db04 = Tab1[0..4]
 };
 static const uint8 kOverworldAreaSprcollSizes[192] = {
   4, 4, 2, 4, 4, 4, 4, 2, 4, 4, 4, 4, 4, 4, 4, 4,
@@ -474,8 +490,6 @@ static HandlerFuncK *const kSprite_ExecuteSingle[12] = {
   &SpriteModule_Stunned,
 };
 // it's not my job to tell you what to think, my job is to think about what you tell me'
-#define R0 WORD(g_ram[0])
-#define R2 WORD(g_ram[2])
 static const uint8 kSpawnSecretItems[22] = {
   0xd9, 0x3e, 0x79, 0xd9, 0xdc, 0xd8, 0xda, 0xe4, 0xe1, 0xdc, 0xd8, 0xdf, 0xe0, 0xb, 0x42, 0xd3,
   0x41, 0xd4, 0xd9, 0xe3, 0xd8, 0,
@@ -561,7 +575,7 @@ int Sprite_SpawnSimpleSparkleGarnishEx(int k, uint16 x, uint16 y, int limit) {
     garnish_sprite[j] = k;
     garnish_floor[j] = sprite_floor[k];
   }
-  g_ram[15] = j;
+  A15 = j;
   return j;
 }
 
@@ -926,7 +940,7 @@ void Sprite_DrawMultiplePlayerDeferred(int k, const DrawMultipleData *src, int n
 
 int Sprite_ShowSolicitedMessage(int k, uint16 msg) {  // 85e1a7
   static const uint8 kShowMessageFacing_Tab0[4] = {4, 6, 0, 2};
-  dialogue_message_index = msg;
+  dialogue_message_index = SeedOracle_JpMessageId(msg);
   if (!Sprite_CheckDamageToLink_same_layer(k) ||
       Sprite_CheckIfLinkIsBusy() ||
       !(filtered_joypad_L & 0x80) ||
@@ -935,21 +949,21 @@ int Sprite_ShowSolicitedMessage(int k, uint16 msg) {  // 85e1a7
   uint8 dir = Sprite_DirectionToFaceLink(k, NULL);
   if (link_direction_facing != kShowMessageFacing_Tab0[dir])
     return sprite_D[k];
-  Sprite_ShowMessageUnconditional(dialogue_message_index);
+  Sprite_ShowMessageUnconditional(msg);
   sprite_delay_aux4[k] = 64;
   return dir ^ 0x103;
 }
 
 int Sprite_ShowMessageOnContact(int k, uint16 msg) {  // 85e1f0
-  dialogue_message_index = msg;
+  dialogue_message_index = SeedOracle_JpMessageId(msg);
   if (!Sprite_CheckDamageToLink_same_layer(k) || link_auxiliary_state == 2)
     return sprite_D[k];
-  Sprite_ShowMessageUnconditional(dialogue_message_index);
+  Sprite_ShowMessageUnconditional(msg);
   return Sprite_DirectionToFaceLink(k, NULL) ^ 0x103;
 }
 
 void Sprite_ShowMessageUnconditional(uint16 msg) {  // 85e219
-  dialogue_message_index = msg;
+  dialogue_message_index = SeedOracle_JpMessageId(msg);
   byte_7E0223 = 0;
   messaging_module = 0;
   submodule_index = 2;
@@ -1105,6 +1119,7 @@ void Sprite_SpawnSecret(int k) {  // 868264
     if (type == 0x79)
       sprite_A[j] = 32;
   }
+  MOD_EMIT(kModEv_DropSpawned, type, j, 0);
 }
 
 void Sprite_Main() {  // 868328
@@ -1166,6 +1181,7 @@ void Sprite_TimersAndOam(int k) {  // 8683f2
   } else {
     Oam_AllocateFromRegionA(num);
   }
+  FrameDesc_NoteSpriteOam(k, oam_cur_ptr);
 
   if (!(submodule_index | flag_unk1)) {
     if (sprite_delay_main[k])
@@ -1498,6 +1514,14 @@ bool Sprite_ReturnIfPaused(int k) {  // 86d9f3
   return (flag_unk1 || submodule_index || !(sprite_defl_bits[k] & 0x80) && sprite_pause[k]);
 }
 
+// asm $86dc35: LDA $DB04,Y / CLC / ADC $0DC0,X / TAY / LDA $DA09,Y.
+// The 65816 adds in 8 bits, so the index wraps at 256. The table keeps all
+// 256 entries, with 251..255 holding the bytes the ROM has after it.
+static uint8 Sprite_PrepAndDrawSingleLarge_CharNum(int k) {
+  uint8 index = kSprite_PrepAndDrawSingleLarge_Tab1[sprite_type[k]] + sprite_graphics[k];
+  return kSprite_PrepAndDrawSingleLarge_Tab2[index];
+}
+
 void SpriteDraw_SingleLarge(int k) {  // 86dc10
   PrepOamCoordsRet info;
   if (Sprite_PrepOamCoordOrDoubleRet(k, &info))
@@ -1510,7 +1534,7 @@ void Sprite_PrepAndDrawSingleLargeNoPrep(int k, PrepOamCoordsRet *info) {  // 86
   oam->x = info->x;
   if ((uint16)(info->y + 0x10) < 0x100) {
     oam->y = info->y;
-    oam->charnum = kSprite_PrepAndDrawSingleLarge_Tab2[kSprite_PrepAndDrawSingleLarge_Tab1[sprite_type[k]] + sprite_graphics[k]];
+    oam->charnum = Sprite_PrepAndDrawSingleLarge_CharNum(k);
     oam->flags = info->flags;
   }
   bytewise_extended_oam[oam - oam_buf] = 2 | ((info->x >= 256) ? 1: 0);
@@ -1547,7 +1571,7 @@ void SpriteDraw_SingleSmall(int k) {  // 86dcef
   oam->x = info.x;
   if ((uint16)(info.y + 0x10) < 0x100) {
     oam->y = info.y;
-    oam->charnum = kSprite_PrepAndDrawSingleLarge_Tab2[kSprite_PrepAndDrawSingleLarge_Tab1[sprite_type[k]] + sprite_graphics[k]];
+    oam->charnum = Sprite_PrepAndDrawSingleLarge_CharNum(k);
     oam->flags = info.flags;
   }
   bytewise_extended_oam[oam - oam_buf] = 0 | (info.x >= 256);
@@ -1560,7 +1584,7 @@ void Sprite_DrawThinAndTall(int k) {  // 86dd40
   if (Sprite_PrepOamCoordOrDoubleRet(k, &info))
     return;
   OamEnt *oam = GetOamCurPtr();
-  uint8 a = kSprite_PrepAndDrawSingleLarge_Tab2[kSprite_PrepAndDrawSingleLarge_Tab1[sprite_type[k]] + sprite_graphics[k]];
+  uint8 a = Sprite_PrepAndDrawSingleLarge_CharNum(k);
   SetOamHelper0(oam + 0, info.x, info.y + 0, a + 0x00, info.flags, 0);
   SetOamHelper0(oam + 1, info.x, info.y + 8, a + 0x10, info.flags, 0);
   if (sprite_flags3[k] & 0x10)
@@ -1846,8 +1870,9 @@ bool Sprite_PrepOamCoordOrDoubleRet(int k, PrepOamCoordsRet *ret) {  // 86e41e
   if ((uint16)(x + 0x40 + xt) >= (0x170 + xt * 2) ||
       (uint16)(y + 0x40) >= 0x170 && !(sprite_flags4[k] & 0x20)) {
     sprite_pause[k]++;
-    if (!(sprite_defl_bits[k] & 0x80))
+    if (!(sprite_defl_bits[k] & 0x80)) {
       Sprite_KillSelf(k);
+    }
     out_of_bounds = true;
   }
   ret->x = R0;
@@ -2168,16 +2193,22 @@ uint8 Sprite_DirectionToFaceLink(int k, PointU8 *coords_out) {  // 86eaa4
 }
 
 PairU8 Sprite_IsRightOfLink(int k) {  // 86ead1
-  uint16 x = link_x_coord - Sprite_GetX(k);
+  uint16 lx = link_x_coord;
+  if (SharedWorld_OtherLinkIsTarget(Sprite_GetX(k), Sprite_GetY(k)))
+    lx = SharedWorld_OtherLinkX();
+  uint16 x = lx - Sprite_GetX(k);
   PairU8 rv = { (uint8)(sign16(x) ? 1 : 0), (uint8)x };
   return rv;
 }
 
 PairU8 Sprite_IsBelowLink(int k) {  // 86eae8
-  int t = BYTE(link_y_coord) + 8;
+  uint16 ly = link_y_coord;
+  if (SharedWorld_OtherLinkIsTarget(Sprite_GetX(k), Sprite_GetY(k)))
+    ly = SharedWorld_OtherLinkY();
+  int t = BYTE(ly) + 8;
   int u = (t & 0xff) + sprite_z[k];
   int v = (u & 0xff) - sprite_y_lo[k];
-  int w = HIBYTE(link_y_coord) - sprite_y_hi[k] - (v < 0);
+  int w = HIBYTE(ly) - sprite_y_hi[k] - (v < 0);
   uint8 y = (w & 0xff) + (t >> 8) + (u >> 8);
   PairU8 rv = { (uint8)(sign8(y) ? 1 : 0), (uint8)v };
   return rv;
@@ -2523,6 +2554,8 @@ void Sprite_Func3(int k) {  // 86efda
 bool Sprite_CheckDamageToLink(int k) {  // 86f145
   if (link_disable_sprite_damage)
     return false;
+  if (SharedWorld_OtherLinkIsTarget(Sprite_GetX(k), Sprite_GetY(k)))
+    return false;
   return Sprite_CheckDamageToPlayer_1(k);
 }
 
@@ -2727,6 +2760,7 @@ void Sprite_AttemptDamageToLinkPlusRecoil(int k) {  // 86f3db
   link_incapacitated_timer = 19;
   Sprite_ApplyRecoilToLink(k, 24);
   link_auxiliary_state = 1;
+  g_mod_link_damage_source = kModLinkDamage_Sprite;
   link_give_damage = kPlayerDamages[3 * (sprite_bump_damage[k] & 0xf) + link_armor];
   if (sprite_type[k] == 0x61 && sprite_C[k]) {
     link_actual_vel_x = sprite_x_vel[k] * 2;
@@ -2813,7 +2847,7 @@ void Sprite_ApplyRecoilToLink(int k, uint8 vel) {  // 86f688
   ProjectSpeedRet pt = Sprite_ProjectSpeedTowardsLink(k, vel);
   link_actual_vel_x = pt.x;
   link_actual_vel_y = pt.y;
-  g_ram[0xc7] = link_actual_vel_z = vel >> 1;
+  scratch_c7 = link_actual_vel_z = vel >> 1;
   link_z_coord = 0;
 }
 
@@ -2939,6 +2973,7 @@ void SpriteModule_Die(int k) {  // 86f8a2
 
 void Sprite_DoTheDeath(int k) {  // 86f923
   uint8 type = sprite_type[k];
+  MOD_EMIT(kModEv_SpriteKilled, k, type, 0);
   // This is how Vitreous knows whether to come out of his slime pool
   if (type == 0xBE)
     sprite_G[0]--;
@@ -3014,6 +3049,14 @@ void PrepareEnemyDrop(int k, uint8 item) {  // 86f9d1
   sprite_z[k] = zbak;
   sprite_delay_aux4[k] = 21;
   sprite_stunned[k] = 255;
+  MOD_EMIT(kModEv_DropSpawned, sprite_type[k], k, 0);
+  if (sprite_state[k] == 0) {
+    // A mod removed the drop. Keep the bookkeeping SpriteDeath_Func4 would do
+    // so the dead enemy does not respawn, but do not draw the item at all.
+    Sprite_ManuallySetDeathFlagUW(k);
+    num_sprites_killed++;
+    return;
+  }
   SpriteDeath_Func4(k);
 }
 
@@ -3423,6 +3466,7 @@ void Garnish_CheckPlayerCollision(int k, int x, int y) {  // 89b459
       (uint8)(link_y_coord - BG2VOFS_copy2 - y + 22) < 28) {
     link_auxiliary_state = 1;
     link_incapacitated_timer = 16;
+    g_mod_link_damage_source = kModLinkDamage_Environment;
     link_give_damage = 16;
     link_actual_vel_x ^= 255;
     link_actual_vel_y ^= 255;
@@ -3659,6 +3703,7 @@ int Dungeon_LoadSingleSprite(int k, const uint8 *src) {  // 89c327
   sprite_subtype[k] = tmp_counter | byte_7E0FB6 >> 5;
   sprite_N[k] = k;
   sprite_die_action[k] = 0;
+  MOD_EMIT(kModEv_SpriteSpawn, k, type, 0);
   return k;
 }
 
@@ -3743,7 +3788,6 @@ void Sprite_ActivateAllProxima() {  // 89c55e
   byte_7E069E[1] = 0xff;
 
   int xt = (enhanced_features0 & kFeatures0_ExtendScreen64) ? 0x40 : 0;
-  BG2HOFS_copy2 -= xt;
   for (int i = 21 + (xt >> 3); i >= 0; i--) {
     Sprite_ActivateWhenProximal();
     BG2HOFS_copy2 += 16;
@@ -3842,6 +3886,7 @@ void Overworld_LoadProximaSpriteIfAlive(uint16 blk) {  // 89c739
     sprite_floor[k] = 0;
     sprite_subtype[k] = 0;
     sprite_die_action[k] = 0;
+    MOD_EMIT(kModEv_SpriteSpawn, k, sprite_type[k], 0);
   }
 }
 
@@ -3949,12 +3994,12 @@ void Sprite_KillSelf(int k) {  // 89f1f8
     return;
   sprite_state[k] = 0;
   uint16 blk = sprite_N_word[k];
-  g_ram[0] = blk;  // Sprite_PrepOamCoordOrDoubleRet reads this!
-  WORD(g_ram[1]) = (blk >> 3) + 0xef80; // Sprite_PrepOamCoordOrDoubleRet reads this!
+  A0 = blk;  // Sprite_PrepOamCoordOrDoubleRet reads this!
+  WORD(A1) = (blk >> 3) + 0xef80; // Sprite_PrepOamCoordOrDoubleRet reads this!
   uint8 loadedmask = (0x80 >> (blk & 7));
   uint16 addr = 0xEF80 + (blk >> 3);  // warning: blk may be bad, seen with cannon balls in 2nd dungeon
 
-  uint8 *loadedp = &g_ram[addr + 0x10000];
+  uint8 *loadedp = overworld_sprite_was_loaded + (addr - 0xEF80);
 
   if (blk < 0xffff)
     *loadedp &= ~loadedmask;
@@ -4261,6 +4306,7 @@ int Sprite_SpawnDynamicallyEx(int k, uint8 what, SpriteSpawnInfo *info, int j) {
       sprite_D[j] = sprite_D[k];
       sprite_die_action[j] = 0;
       sprite_subtype[j] = 0;
+      MOD_EMIT(kModEv_SpriteSpawn, j, what, 0);
       break;
     }
   } while (--j >= 0);

@@ -1,0 +1,22 @@
+Loaded LoROM rom
+"THE LEGEND OF ZELDA  "
+*** Replaying file tests/replays/issue243.sav
+compare: on
+frame 1000 5a4d406f
+frame 2000 da42ba34
+frame 3000 66124b33
+frame 4000 2014bc2b
+frame 5000 c25db4e4
+frame 6000 68c03b7b
+frame 7000 873c9953
+frame 8000 657ca10f
+frame 9000 7e0de250
+frame 10000 78601eeb
+frame 11000 692670f1
+frame 12000 11f9053a
+frame 13000 47c5efce
+frame 14000 271ef3d9
+frame 15000 c2fac69e
+frame 16000 ea274151
+frame 17000 215ec2f0
+final 17920 ffc216eb

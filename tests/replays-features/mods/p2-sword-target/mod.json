@@ -1,0 +1,10 @@
+{
+  "id": "p2-sword-target",
+  "name": "P2 sword hit setup",
+  "version": "1.0.0",
+  "api": 1,
+  "enabled": true,
+  "priority": 0,
+  "permissions": ["state_write"],
+  "script": "main.lua"
+}

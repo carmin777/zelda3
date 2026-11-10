@@ -1,0 +1,8 @@
+{
+  "id": "ax-beach-veto",
+  "name": "AX beach transition veto",
+  "version": "1.0.0",
+  "api": 1,
+  "permissions": ["state_write"],
+  "script": "main.lua"
+}

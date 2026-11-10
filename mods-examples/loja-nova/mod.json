@@ -1,0 +1,10 @@
+{
+  "id": "loja-nova",
+  "name": "Loja nova: a pena no lugar do coração",
+  "version": "1.0.0",
+  "api": 1,
+  "enabled": true,
+  "priority": 0,
+  "permissions": ["state_write"],
+  "script": "main.lua"
+}

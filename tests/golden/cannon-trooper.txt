@@ -1,0 +1,5 @@
+Loaded LoROM rom
+"THE LEGEND OF ZELDA  "
+*** Replaying file tests/replays/cannon-trooper.sav
+compare: on
+final 450 61dd86e4
