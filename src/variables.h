@@ -158,6 +158,9 @@
 #define death_var5 (*(uint8*)(g_ram+0x10A))
 #define saved_module_for_menu (*(uint8*)(g_ram+0x10C))
 #define which_entrance (*(uint8*)(g_ram+0x10E))
+// z3r PreviousOverworldDoor ($7F:5099): overworld door index + 1, used to
+// choose the shop inventory when several shops share a room low byte.
+#define previous_overworld_door (*(uint8*)(g_ram+0x15099))
 #define byte_7E010F (*(uint8*)(g_ram+0x10F))
 #define dung_index_x3 (*(uint16*)(g_ram+0x110))
 #define flag_custom_spell_anim_active (*(uint8*)(g_ram+0x112))

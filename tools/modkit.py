@@ -1874,7 +1874,8 @@ def build_mod(args):
       if base_assets[name] != mod_assets[name]:
         changed[name] = mod_assets[name]
 
-    update_mod_manifest(mod_dir, changed, base_sizes, old_generated)
+    update_mod_manifest(mod_dir, changed, base_sizes, old_generated,
+                        force_resize=("kDialogueFont",))
 
     build_info = OrderedDict()
     build_info["tool"] = "modkit"

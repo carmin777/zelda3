@@ -41,9 +41,13 @@ static const uint16 kDefaultKbdControls[kKeys_Total] = {
   _(SDLK_w), _(SDLK_o), S(SDLK_w), C(SDLK_e),
   // ClearKeyLog, StopReplay, Fullscreen, Reset, Pause, PauseDimmed, Turbo, ReplayTurbo, WindowBigger, WindowSmaller, DisplayPerf, ToggleRenderer
   _(SDLK_k), _(SDLK_l), A(SDLK_RETURN), C(SDLK_r), S(SDLK_p), _(SDLK_p), _(SDLK_TAB), _(SDLK_t), N, N, _(SDLK_f), _(SDLK_r),
-  // ToggleVoxel, VoxelCameraLeft/Right/Up/Down, ZoomIn/Out, Reset, Shadows, Lighting
+  // ToggleVoxel, VoxelCameraLeft/Right/Up/Down, ZoomIn/Out, Reset, Shadows,
+  // Lighting, LevelLow/Mid/High
   _(SDLK_F11), A(SDLK_LEFT), A(SDLK_RIGHT), A(SDLK_UP), A(SDLK_DOWN),
   A(SDLK_EQUALS), A(SDLK_MINUS), A(SDLK_0), _(SDLK_F12), S(SDLK_F11),
+  A(SDLK_1), A(SDLK_2), A(SDLK_3),
+  // OptionsMenu (Home is not used by any other default binding).
+  [kKeys_OptionsMenu] = _(SDLK_HOME),
 };
 
 // Default keys for the second local player. They are only consulted when
@@ -70,7 +74,8 @@ static const KeyNameId kKeyNameId[] = {
   S(CheatLife), S(CheatKeys), S(CheatEquipment), S(CheatWalkThroughWalls),
   S(ClearKeyLog), S(StopReplay), S(Fullscreen), S(Reset),
   S(Pause), S(PauseDimmed), S(Turbo), S(ReplayTurbo), S(WindowBigger), S(WindowSmaller), S(VolumeUp), S(VolumeDown), S(DisplayPerf), S(ToggleRenderer),
-  S(ToggleVoxel), S(VoxelCameraLeft), S(VoxelCameraRight), S(VoxelCameraUp), S(VoxelCameraDown), S(VoxelCameraZoomIn), S(VoxelCameraZoomOut), S(VoxelCameraReset), S(VoxelShadows), S(VoxelLighting),
+  S(ToggleVoxel), S(VoxelCameraLeft), S(VoxelCameraRight), S(VoxelCameraUp), S(VoxelCameraDown), S(VoxelCameraZoomIn), S(VoxelCameraZoomOut), S(VoxelCameraReset), S(VoxelShadows), S(VoxelLighting), S(VoxelLevelLow), S(VoxelLevelMid), S(VoxelLevelHigh),
+  {"Menu", kKeys_OptionsMenu, 1},
 };
 #undef S
 #undef M
@@ -124,6 +129,44 @@ static int KeyMapHash_Find(const KeyMap *map, uint16 key) {
   return 0;
 }
 
+static void KeyMapHash_Rebuild(KeyMap *map) {
+  memset(map->hash_first, 0, sizeof(map->hash_first));
+  for (int i = 0; i < map->size; i++) {
+    KeyMapHashEnt *ent = &map->ents[i];
+    ent->next = 0;
+    uint16 *cur = &map->hash_first[ent->key % 255];
+    while (*cur)
+      cur = &map->ents[*cur - 1].next;
+    *cur = (uint16)(i + 1);
+  }
+}
+
+static void KeyMapHash_RemoveCommand(KeyMap *map, uint16 cmd) {
+  int out = 0;
+  for (int i = 0; i < map->size; i++) {
+    KeyMapHashEnt ent = map->ents[i];
+    if (ent.cmd == cmd)
+      continue;
+    map->ents[out++] = ent;
+  }
+  map->size = out;
+  KeyMapHash_Rebuild(map);
+}
+
+// Removes every binding for cmd and every binding that uses key. The options
+// menu uses this when the user assigns a key that was already taken.
+static void KeyMapHash_Remove(KeyMap *map, uint16 cmd, uint16 key) {
+  int out = 0;
+  for (int i = 0; i < map->size; i++) {
+    KeyMapHashEnt ent = map->ents[i];
+    if (ent.cmd == cmd || ent.key == key)
+      continue;
+    map->ents[out++] = ent;
+  }
+  map->size = out;
+  KeyMapHash_Rebuild(map);
+}
+
 static int KeyFromSdlKey(SDL_Keycode code, SDL_Keymod mod) {
   if (code & ~(SDLK_SCANCODE_MASK | 0x1ff))
     return -1;
@@ -171,8 +214,11 @@ static void ParseKeyArrayTo(KeyMap *map, char *value, int cmd, int size) {
       fprintf(stderr, "Unknown key: '%s'\n", s);
       continue;
     }
-    if (!KeyMapHash_Add(map, key_with_mod | REMAP_SDL_KEYCODE(key), cmd))
-      fprintf(stderr, "Duplicate key: '%s'\n", s);
+    uint16 binding = (uint16)(key_with_mod | REMAP_SDL_KEYCODE(key));
+    // A later file (for example zelda3.user.ini after !include zelda3.ini)
+    // overrides the earlier command instead of printing a duplicate warning.
+    KeyMapHash_RemoveCommand(map, (uint16)cmd);
+    KeyMapHash_Add(map, binding, (uint16)cmd);
   }
 }
 
@@ -190,6 +236,7 @@ typedef struct GamepadMap {
 static GamepadMap g_joymap, g_joymap2;
 static bool has_joypad_controls;
 static bool has_joypad_controls2;
+static bool has_gamepad_menu;
 
 static int CountBits32(uint32 n) {
   int count = 0;
@@ -228,6 +275,42 @@ static int GamepadMap_Find(const GamepadMap *map, int button,
       return ent->cmd;
   }
   return 0;
+}
+
+// Removes every binding for cmd, and (when button >= 0) every binding that
+// uses that button. Used by the options menu for single-button rebinding.
+static void GamepadMap_Remove(GamepadMap *map, uint16 cmd, int button) {
+  if (map->size == 0)
+    return;
+  GamepadMapEnt *tmp = malloc(sizeof(*tmp) * map->size);
+  if (!tmp)
+    Die("malloc failed");
+  int out = 0;
+  uint16 starts[kGamepadBtn_Count];
+  uint16 ends[kGamepadBtn_Count];
+  memset(starts, 0, sizeof(starts));
+  memset(ends, 0, sizeof(ends));
+  for (int b = 0; b < kGamepadBtn_Count; b++) {
+    starts[b] = (uint16)(out + 1);
+    for (int e = map->hash_first[b]; e != 0; e = map->ents[e - 1].next) {
+      GamepadMapEnt ent = map->ents[e - 1];
+      if (ent.cmd == cmd || b == button)
+        continue;
+      tmp[out++] = ent;
+    }
+    ends[b] = (uint16)out;
+  }
+  memcpy(map->ents, tmp, sizeof(*tmp) * out);
+  free(tmp);
+  map->size = out;
+  memset(map->hash_first, 0, sizeof(map->hash_first));
+  for (int b = 0; b < kGamepadBtn_Count; b++) {
+    if (starts[b] > ends[b])
+      continue;
+    map->hash_first[b] = starts[b];
+    for (int i = starts[b]; i <= ends[b]; i++)
+      map->ents[i - 1].next = i < ends[b] ? (uint16)(i + 1) : 0;
+  }
 }
 
 int FindCmdForGamepadButton(int button, uint32 modifiers) {
@@ -286,6 +369,9 @@ static void ParseGamepadArrayTo(GamepadMap *map, char *value, int cmd,
         ss++;
         modifiers |= 1 << button;
       } else if (*ss == 0) {
+        // Only the same command is replaced, so modifier combinations that
+        // share a base button keep working.
+        GamepadMap_Remove(map, (uint16)cmd, -1);
         GamepadMap_AddTo(map, button, modifiers, cmd);
         break;
       } else
@@ -310,6 +396,8 @@ static void RegisterDefaultKeys() {
     for (int i = 0; i < countof(kDefaultGamepadCmds); i++)
       GamepadMap_AddTo(&g_joymap, kDefaultGamepadCmds[i], 0, kKeys_Controls + i);
   }
+  if (!has_gamepad_menu)
+    GamepadMap_AddTo(&g_joymap, kGamepadBtn_L3, 0, kKeys_OptionsMenu);
   if (!has_joypad_controls2) {
     for (int i = 0; i < countof(kDefaultGamepadCmds); i++)
       GamepadMap_AddTo(&g_joymap2, kDefaultGamepadCmds[i], 0, kKeys_Controls + i);
@@ -378,6 +466,8 @@ static bool HandleIniConfig(int section, const char *key, char *value) {
       if (StringEqualsNoCase(key, kKeyNameId[i].name)) {
         if (i == 1)
           has_joypad_controls = true;
+        if (kKeyNameId[i].id == kKeys_OptionsMenu)
+          has_gamepad_menu = true;
         ParseGamepadArrayTo(&g_joymap, value, kKeyNameId[i].id, kKeyNameId[i].size);
         return true;
       }
@@ -439,6 +529,8 @@ static bool HandleIniConfig(int section, const char *key, char *value) {
     } else if (StringEqualsNoCase(key, "RenderPlugin")) {
       g_config.render_plugin = *value ? value : NULL;
       return true;
+    } else if (StringEqualsNoCase(key, "RenderPluginEnabled")) {
+      return ParseBool(value, &g_config.render_plugin_enabled);
     } else if (StringEqualsNoCase(key, "LinkGraphics")) {
       g_config.link_graphics = value;
       return true;
@@ -476,6 +568,13 @@ static bool HandleIniConfig(int section, const char *key, char *value) {
     } else if (StringEqualsNoCase(key, "MSUVolume")) {
       g_config.msuvolume = atoi(value);
       return true;
+    } else if (StringEqualsNoCase(key, "Volume")) {
+      long volume = strtol(value, NULL, 10);
+      if (volume < 0 || volume > 100)
+        return false;
+      g_config.volume = (uint8)volume;
+      g_config.volume_set = true;
+      return true;
     } else if (StringEqualsNoCase(key, "ResumeMSU")) {
       return ParseBool(value, &g_config.resume_msu);
     }
@@ -487,6 +586,7 @@ static bool HandleIniConfig(int section, const char *key, char *value) {
       const char* s;
       int h = 224;
       bool nospr = false, novis = false;
+      g_config.aspect_ratio_flags = 0;
       // todo: make it not depend on the order
       while ((s = NextDelim(&value, ',')) != NULL) {
         if (strcmp(s, "extend_y") == 0)
@@ -499,10 +599,13 @@ static bool HandleIniConfig(int section, const char *key, char *value) {
           g_config.extended_aspect_ratio = (h * 18 / 9 - 256) / 2;
         else if (strcmp(s, "4:3") == 0)
           g_config.extended_aspect_ratio = 0;
-        else if (strcmp(s, "unchanged_sprites") == 0)
+        else if (strcmp(s, "unchanged_sprites") == 0) {
           nospr = true;
-        else if (strcmp(s, "no_visual_fixes") == 0)
+          g_config.aspect_ratio_flags |= kAspectFlag_UnchangedSprites;
+        } else if (strcmp(s, "no_visual_fixes") == 0) {
           novis = true;
+          g_config.aspect_ratio_flags |= kAspectFlag_NoVisualFixes;
+        }
         else
           return false;
       }
@@ -527,6 +630,15 @@ static bool HandleIniConfig(int section, const char *key, char *value) {
       return ParseBool(value, &g_config.mods_enabled);
     } else if (StringEqualsNoCase(key, "Directory")) {
       g_config.mods_directory = value;
+      return true;
+    } else if (StringEqualsNoCase(key, "EnableOverrides")) {
+      g_config.mods_enable_overrides = *value ? value : NULL;
+      return true;
+    } else if (StringEqualsNoCase(key, "DisableOverrides")) {
+      g_config.mods_disable_overrides = *value ? value : NULL;
+      return true;
+    } else if (StringEqualsNoCase(key, "PriorityOverrides")) {
+      g_config.mods_priority_overrides = *value ? value : NULL;
       return true;
     } else if (StringEqualsNoCase(key, "LuaInstructionLimit")) {
       char *end;
@@ -661,6 +773,8 @@ static bool ParseOneConfigFile(const char *filename, int depth) {
 
 void ParseConfigFile(const char *filename) {
   g_config.msuvolume = 100;  // default msu volume, 100%
+  g_config.render_plugin_enabled = true;
+  g_config.volume = 100;
   g_config.mods_enabled = true;
   g_config.mods_directory = "mods";
   g_config.lua_instruction_limit = 10000000;
@@ -689,4 +803,201 @@ void ParseConfigFile(const char *filename) {
       fprintf(stderr, "Warning: Unable to read config file %s\n", filename);
   }
   RegisterDefaultKeys();
+}
+
+uint16 Config_KeyFromSdl(SDL_Keycode code, SDL_Keymod mod) {
+  int key = KeyFromSdlKey(code, mod);
+  return key <= 0 ? 0 : (uint16)key;
+}
+
+const char *Config_FormatKey(uint16 key, char *buf, size_t size) {
+  if (size == 0)
+    return buf;
+  buf[0] = 0;
+  if (key == 0)
+    return buf;
+  size_t pos = 0;
+  const char *prefixes[3];
+  int prefix_count = 0;
+  if (key & kKeyMod_Shift)
+    prefixes[prefix_count++] = "Shift+";
+  if (key & kKeyMod_Ctrl)
+    prefixes[prefix_count++] = "Ctrl+";
+  if (key & kKeyMod_Alt)
+    prefixes[prefix_count++] = "Alt+";
+  for (int i = 0; i < prefix_count && pos < size; i++) {
+    int n = snprintf(buf + pos, size - pos, "%s", prefixes[i]);
+    if (n < 0)
+      break;
+    pos += (size_t)n;
+  }
+  SDL_Keycode code = (SDL_Keycode)(key & 0x1ff);
+  if (key & kKeyMod_ScanCode)
+    code |= SDLK_SCANCODE_MASK;
+  const char *name = SDL_GetKeyName(code);
+  if (name == NULL || name[0] == 0)
+    name = "Unknown";
+  if (pos < size)
+    snprintf(buf + pos, size - pos, "%s", name);
+  return buf;
+}
+
+uint16 Config_GetCommandKey(int cmd) {
+  for (int i = 0; i < g_keymap.size; i++) {
+    if (g_keymap.ents[i].cmd == cmd)
+      return g_keymap.ents[i].key;
+  }
+  return 0;
+}
+
+bool Config_SetCommandKey(int cmd, uint16 key) {
+  if (key == 0)
+    return false;
+  if (cmd != kKeys_OptionsMenu && key == Config_GetCommandKey(kKeys_OptionsMenu))
+    return false;
+  KeyMapHash_Remove(&g_keymap, (uint16)cmd, key);
+  return KeyMapHash_Add(&g_keymap, key, (uint16)cmd);
+}
+
+static const char *const kGamepadMenuNames[] = {
+  "A", "B", "X", "Y", "Back", "Guide", "Start", "L3", "R3",
+  "L1", "R1", "DpadUp", "DpadDown", "DpadLeft", "DpadRight", "L2", "R2",
+};
+
+const char *Config_GamepadButtonName(int button) {
+  if (button < 0 || button >= kGamepadBtn_Count)
+    return "None";
+  return kGamepadMenuNames[button];
+}
+
+int Config_GamepadButtonFromName(const char *name) {
+  for (int i = 0; i < kGamepadBtn_Count; i++) {
+    if (StringEqualsNoCase(name, kGamepadMenuNames[i]))
+      return i;
+  }
+  return kGamepadBtn_Invalid;
+}
+
+int Config_GetCommandGamepad(int cmd) {
+  for (int b = 0; b < kGamepadBtn_Count; b++) {
+    for (int e = g_joymap.hash_first[b]; e != 0; e = g_joymap.ents[e - 1].next) {
+      const GamepadMapEnt *ent = &g_joymap.ents[e - 1];
+      if (ent->cmd == cmd && ent->modifiers == 0)
+        return b;
+    }
+  }
+  return kGamepadBtn_Invalid;
+}
+
+bool Config_SetCommandGamepad(int cmd, int button) {
+  if (button < 0 || button >= kGamepadBtn_Count)
+    return false;
+  if (cmd != kKeys_OptionsMenu && button == Config_GetCommandGamepad(kKeys_OptionsMenu))
+    return false;
+  GamepadMap_Remove(&g_joymap, (uint16)cmd, button);
+  GamepadMap_AddTo(&g_joymap, button, 0, (uint16)cmd);
+  return true;
+}
+
+void Config_FormatControls(char *out, size_t size) {
+  if (size == 0)
+    return;
+  out[0] = 0;
+  size_t pos = 0;
+  for (int i = 0; i <= kKeys_Controls_Last - kKeys_Controls; i++) {
+    char keybuf[64];
+    Config_FormatKey(Config_GetCommandKey(kKeys_Controls + i), keybuf, sizeof(keybuf));
+    int n = snprintf(out + pos, size - pos, "%s%s", i == 0 ? "" : ", ", keybuf);
+    if (n < 0 || (size_t)n >= size - pos)
+      break;
+    pos += (size_t)n;
+  }
+}
+
+void Config_FormatGamepadControls(char *out, size_t size) {
+  if (size == 0)
+    return;
+  out[0] = 0;
+  size_t pos = 0;
+  for (int i = 0; i <= kKeys_Controls_Last - kKeys_Controls; i++) {
+    int button = Config_GetCommandGamepad(kKeys_Controls + i);
+    int n = snprintf(out + pos, size - pos, "%s%s", i == 0 ? "" : ", ",
+                     Config_GamepadButtonName(button));
+    if (n < 0 || (size_t)n >= size - pos)
+      break;
+    pos += (size_t)n;
+  }
+}
+
+static bool ListContainsToken(const char *list, const char *token) {
+  if (list == NULL)
+    return false;
+  const char *p = list;
+  while (*p) {
+    while (*p == ' ' || *p == '\t' || *p == ',')
+      p++;
+    const char *start = p;
+    while (*p && *p != ',')
+      p++;
+    const char *end = p;
+    while (end > start && (end[-1] == ' ' || end[-1] == '\t'))
+      end--;
+    size_t len = (size_t)(end - start);
+    if (len == strlen(token) && memcmp(start, token, len) == 0)
+      return true;
+  }
+  return false;
+}
+
+bool Config_IsModDisableOverride(const char *id) {
+  return ListContainsToken(g_config.mods_disable_overrides, id);
+}
+
+bool Config_IsModEnableOverride(const char *id) {
+  return ListContainsToken(g_config.mods_enable_overrides, id);
+}
+
+bool Config_GetModPriorityOverride(const char *id, int *priority) {
+  const char *list = g_config.mods_priority_overrides;
+  if (list == NULL)
+    return false;
+  const char *p = list;
+  while (*p) {
+    while (*p == ' ' || *p == '\t' || *p == ',')
+      p++;
+    const char *start = p;
+    while (*p && *p != ',')
+      p++;
+    const char *end = p;
+    while (end > start && (end[-1] == ' ' || end[-1] == '\t'))
+      end--;
+    const char *eq = memchr(start, '=', (size_t)(end - start));
+    if (eq != NULL) {
+      const char *id_end = eq;
+      while (id_end > start && (id_end[-1] == ' ' || id_end[-1] == '\t'))
+        id_end--;
+      size_t id_len = (size_t)(id_end - start);
+      if (id_len == strlen(id) && memcmp(start, id, id_len) == 0) {
+        char numbuf[32];
+        size_t num_len = (size_t)(end - eq - 1);
+        const char *num = eq + 1;
+        while (num_len != 0 && (*num == ' ' || *num == '\t')) {
+          num++;
+          num_len--;
+        }
+        if (num_len != 0 && num_len < sizeof(numbuf)) {
+          memcpy(numbuf, num, num_len);
+          numbuf[num_len] = 0;
+          char *num_end;
+          long value = strtol(numbuf, &num_end, 10);
+          if (*num_end == 0 && value >= -9999 && value <= 9999) {
+            *priority = (int)value;
+            return true;
+          }
+        }
+        return false;
+      }
+    }
+  }
+  return false;
 }

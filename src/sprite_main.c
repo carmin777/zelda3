@@ -10,6 +10,7 @@
 #include "player.h"
 #include "misc.h"
 #include "mod/hooks.h"
+#include "mod/inverted.h"
 #include "mod/items.h"
 #include "mod/seed_import.h"
 #include "mod/shared_world.h"
@@ -6743,7 +6744,7 @@ void Sprite_Sahasrahla(int k) {  // 85f14d
     break;
   case 2:  // grant boots
     item_receipt_method = 0;
-    Link_ReceiveItem(0x4b, 0);
+    Link_ReceiveItem(ModSeedImport_NpcItem(kModNpcSahasrahla, 0x4b), 0);
     sprite_ai_state[k] = 3;
     savegame_map_icons_indicator = 3;
     break;
@@ -7543,6 +7544,10 @@ void SpritePrep_Octoballoon(int k) {  // 868910
 }
 
 void SpritePrep_AgahnimsBarrier(int k) {  // 86891b
+  // z3r Electric_Barrier ($A4:A01C): in inverted mode the barrier is already
+  // marked dead before the original event-bit test.
+  if (ModInverted_Active())
+    save_ow_event_info[BYTE(overworld_screen_index)] |= 0x40;
   if (save_ow_event_info[BYTE(overworld_screen_index)] & 0x40)
     sprite_graphics[k] = 4;
   SpritePrep_MoveDown_8px_Right8px(k);
@@ -7852,7 +7857,8 @@ void SpritePrep_Shopkeeper(int k) {  // 868bf1
   sprite_flags3[k] |= 16;
   uint8 room = BYTE(dungeon_room_index);
   int shop_count;
-  const ModShopEntry *shop = ModShop_FindForRoom(room, &shop_count);
+  const ModShopEntry *shop = ModShop_FindForRoom(
+      room, ModSeedImport_Active() ? previous_overworld_door : 0, &shop_count);
   if (shop != NULL) {
     for (int i = 0; i < shop_count; i++)
       ShopKeeper_SpawnShopItemEntry(k, i, &shop[i]);
@@ -10655,7 +10661,7 @@ void Sprite_1F_SickKid(int k) {  // 86b94c
     break;
   case 2:  // grant
     item_receipt_method = 0;
-    Link_ReceiveItem(0x21, 0);
+    Link_ReceiveItem(ModSeedImport_NpcItem(kModNpcSickKid, 0x21), 0);
     flag_is_link_immobilized = 0;
     sprite_ai_state[k] = 3;
     break;
@@ -13696,7 +13702,9 @@ void Waterfall(int k) {  // 9af5b8
   if (Sprite_ReturnIfInactive(k))
     return;
   if (Sprite_CheckDamageToLink_same_layer(k)) {
-    if (BYTE(overworld_screen_index) == 0x43)
+    // z3r GanonTowerInvertedCheck: in inverted mode the screen never matches
+    // $43 here, so the waterfall keeps the normal splash.
+    if (!ModInverted_Active() && BYTE(overworld_screen_index) == 0x43)
       AncillaAdd_GTCutscene();
     else
       AncillaAdd_WaterfallSplash();
@@ -18556,7 +18564,7 @@ void Catfish_RegurgitateMedallion(int k) {  // 9de16c
     Sprite_SetSpawnedCoordinates(j, &info);
     sprite_x_vel[j] = 24;
     sprite_z_vel[j] = 48;
-    sprite_A[j] = 17;
+    sprite_A[j] = ModSeedImport_NpcItem(kModNpcCatfish, 17);
     SpriteSfx_QueueSfx2WithPan(j, 0x20);
     sprite_flags2[j] = 0x83;
     sprite_flags3[j] = 0x58;
@@ -24930,7 +24938,7 @@ void Sprite_AD_OldMan(int k) {  // 9ee992
     case 0:  // grant mirror
       sprite_ai_state[k]++;
       item_receipt_method = 0;
-      Link_ReceiveItem(0x1a, 0);
+      Link_ReceiveItem(ModSeedImport_NpcItem(kModNpcOldMan, 0x1a), 0);
       which_starting_point = 1;
       OldMan_EnableCutscene();
       sprite_delay_main[k] = 48;

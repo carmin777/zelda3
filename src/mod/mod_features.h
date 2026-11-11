@@ -14,6 +14,13 @@ bool ModFeatures_ParseIni(int section, const char *key, const char *value,
 // Writes the comma-separated list of accepted names (for error messages).
 void ModFeatures_FormatNames(char *out, size_t out_size);
 
+// Read-only view of the feature table for the in-game options menu.
+int ModFeatures_Count(void);
+const char *ModFeatures_Name(int index);
+uint32 ModFeatures_Mask(int index);
+int ModFeatures_IniSection(int index);
+bool ModFeatures_IsManagedKey(int section, const char *key);
+
 // Applies the feature values of one successfully loaded mod on top of the
 // current config. Ownership and conflicts are logged to stderr. mod_id and
 // priority must stay valid until the mod loader has finished.

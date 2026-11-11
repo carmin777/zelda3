@@ -13,8 +13,22 @@
 
 #include "../../src/mod/frame_desc.h"
 
+// How the 2D tile art is folded into 3D. Flat art is a ground/water quad;
+// top art is a horizontal surface (roofs, ledges); upright art reconstructs
+// the drawing on the south face (walls, trees, fences, facades). Auto lets
+// the renderer derive the mode from the collision height and the drawing.
+typedef enum VoxelArtMode {
+  kVoxelArt_Auto = 0,
+  kVoxelArt_Flat = 1,
+  kVoxelArt_Top = 2,
+  kVoxelArt_Upright = 3,
+  kVoxelArt_Stack = 4,
+  kVoxelArt_Prop = 5,  // opaque ground tile with a small painted object
+} VoxelArtMode;
+
 typedef struct VoxelCameraSettings {
   float angle_deg;       // camera elevation, 90 = top-down, 0 = horizon
+  float indoor_angle_deg;  // maximum elevation used in rooms
   float distance_scale;  // 1.0 = default perspective; larger = flatter
   float height_scale;    // vertical scale of voxel columns
   bool follow_link;      // pan the camera slightly toward Link
@@ -28,6 +42,17 @@ typedef struct VoxelRenderSettings {
   float floor_step;      // height difference between dungeon floors, blocks
   float skirt;           // depth of the column skirt below the top, blocks
   float height_scale;    // multiplier for semantic column heights
+  float tilt_shift;      // 0 = off; 0..1 world-only miniature blur
+  float exposure;        // overall world-light gain (1.0 = source colours)
+  float stack_height;    // tree canopy dome height, in 8-pixel blocks
+  int mesh_detail;       // pixel step for cut-outs/stacks: 1, 2, 4 or 8
+  // Fixed face shades. The top face carries the 2D colour unchanged; the
+  // other faces step down gently so an object reads as a volume without the
+  // near-black sides of a physically lit model.
+  float face_top;
+  float face_front;
+  float face_side;
+  float face_back;
 } VoxelRenderSettings;
 
 typedef struct VoxelLightSettings {
@@ -64,6 +89,12 @@ void VoxelProfile_Free(VoxelProfile *profile);
 // per-attribute height, or 0 when no entry matches.
 float VoxelProfile_Height(const VoxelProfile *profile, const FrameDesc *desc,
                           int layer, int attr, int raw, int tile);
+
+// Art mode for one BG tile. Returns the matching exception mode, or
+// kVoxelArt_Auto when the caller should derive it.
+VoxelArtMode VoxelProfile_Art(const VoxelProfile *profile,
+                              const FrameDesc *desc, int layer, int attr,
+                              int raw, int tile);
 
 const VoxelCameraSettings *VoxelProfile_Camera(const VoxelProfile *profile);
 const VoxelRenderSettings *VoxelProfile_Render(const VoxelProfile *profile);

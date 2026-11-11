@@ -2,19 +2,27 @@
   "format": "zelda3-voxel-profile",
   "version": 1,
   "camera": {
-    "angle": 58.0,
-    "distance": 1.0,
+    "angle": 54.0,
+    "indoor_angle": 45.0,
+    "distance": 1.5,
     "height": 1.0,
     "follow_link": true,
     "yaw": 0.0,
     "zoom": 1.0
   },
   "render": {
-    "side_shade": 0.72,
+    "side_shade": 0.86,
     "sprite_scale": 1.0,
     "floor_step": 0.5,
     "skirt": 1.0,
-    "height_scale": 1.0
+    "height_scale": 1.0,
+    "tilt_shift": 0.0,
+    "exposure": 1.04,
+    "stack_height": 2.2,
+    "face_top": 1.0,
+    "face_front": 0.98,
+    "face_side": 0.92,
+    "face_back": 0.85
   },
   "lighting": {
     "enabled": true,
@@ -25,7 +33,7 @@
   },
   "shadows": {
     "enabled": true,
-    "strength": 0.32,
+    "strength": 0.15,
     "length": 1.5,
     "columns": true,
     "sprites": true
@@ -290,34 +298,210 @@
   },
   "exceptions": [
     {
+      "indoors": false,
+      "area": 0,
+      "raw_min": 54,
+      "raw_max": 54,
+      "height": 1.5,
+      "mode": "flat"
+    },
+    {
+      "indoors": false,
+      "area": 0,
+      "attr": 1,
+      "height": 1.0
+    },
+    {
+      "indoors": false,
+      "area": 0,
+      "attr": 2,
+      "height": 1.0
+    },
+    {
+      "indoors": false,
+      "area": 0,
+      "attr": 3,
+      "height": 1.0
+    },
+    {
+      "indoors": false,
+      "area": 0,
+      "raw_min": 805,
+      "raw_max": 805,
+      "height": 0.5,
+      "mode": "upright"
+    },
+    {
+      "indoors": false,
+      "area": 41,
+      "attr": 1,
+      "height": 1.0
+    },
+    {
+      "indoors": false,
+      "area": 41,
+      "attr": 2,
+      "height": 1.0
+    },
+    {
+      "indoors": false,
+      "area": 41,
+      "attr": 3,
+      "height": 1.0
+    },
+
+    {
+      "indoors": false,
+      "area": 82,
+      "raw_min": 52,
+      "raw_max": 54,
+      "height": 0.0,
+      "mode": "flat"
+    },
+    {
+      "indoors": false,
+      "area": 98,
+      "raw_min": 52,
+      "raw_max": 52,
+      "height": 0.0,
+      "mode": "flat"
+    },
+    {
+      "indoors": false,
+      "area": 98,
+      "raw_min": 539,
+      "raw_max": 539,
+      "height": 1.5,
+      "mode": "prop"
+    },
+    {
+      "raw_min": 1000,
+      "raw_max": 1000,
+      "height": 1.0,
+      "mode": "top"
+    },
+    {
+      "raw_min": 1008,
+      "raw_max": 1008,
+      "height": 1.0,
+      "mode": "top"
+    },
+    {
+      "raw_min": 996,
+      "raw_max": 996,
+      "height": 2.5,
+      "mode": "top"
+    },
+    {
+      "raw_min": 1011,
+      "raw_max": 1011,
+      "height": 2.5,
+      "mode": "top"
+    },
+    {
+      "raw_min": 1023,
+      "raw_max": 1027,
+      "height": 2.5,
+      "mode": "top"
+    },
+    {
+      "raw_min": 1031,
+      "raw_max": 1035,
+      "height": 2.5,
+      "mode": "top"
+    },
+    {
+      "raw_min": 1040,
+      "raw_max": 1048,
+      "height": 0.0,
+      "mode": "flat"
+    },
+    {
+      "raw_min": 3493,
+      "raw_max": 3495,
+      "height": 0.0,
+      "mode": "flat"
+    },
+    {
+      "raw_min": 1051,
+      "raw_max": 1052,
+      "height": 2.5,
+      "mode": "upright"
+    },
+    {
+      "indoors": false,
+      "raw_min": 52,
+      "raw_max": 53,
+      "tile_min": 0,
+      "tile_max": 159,
+      "height": 1.5,
+      "mode": "stack"
+    },
+    {
+      "indoors": false,
+      "raw_min": 52,
+      "raw_max": 53,
+      "tile_min": 160,
+      "tile_max": 1023,
+      "height": 1.5,
+      "mode": "upright"
+    },
+    {
+      "indoors": false,
+      "raw_min": 1604,
+      "raw_max": 1635,
+      "height": 1.5,
+      "mode": "stack"
+    },
+    {
+      "indoors": false,
+      "raw_min": 869,
+      "raw_max": 889,
+      "height": 1.5,
+      "mode": "stack"
+    },
+    {
+      "indoors": false,
+      "raw_min": 149,
+      "raw_max": 156,
+      "height": 1.5,
+      "mode": "stack"
+    },
+    {
       "indoors": true,
       "attr": 4,
-      "height": 1.5
+      "height": 1.5,
+      "mode": "top"
     },
     {
       "indoors": true,
       "attr": 11,
-      "height": 1.5
+      "height": 1.5,
+      "mode": "top"
     },
     {
       "indoors": true,
       "attr": 108,
-      "height": 1.5
+      "height": 1.5,
+      "mode": "top"
     },
     {
       "indoors": true,
       "attr": 109,
-      "height": 1.5
+      "height": 1.5,
+      "mode": "top"
     },
     {
       "indoors": true,
       "attr": 110,
-      "height": 1.5
+      "height": 1.5,
+      "mode": "top"
     },
     {
       "indoors": true,
       "attr": 111,
-      "height": 1.5
+      "height": 1.5,
+      "mode": "top"
     }
   ]
 }

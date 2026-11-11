@@ -19,9 +19,11 @@ import hashlib
 import json
 import os
 import struct
+import subprocess
 import sys
 import zlib
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JP10_CRC32 = 0x3322EFFC
 SEEDHASH_OFF = 0x180215
 SEEDHASH_LEN = 5
@@ -243,6 +245,132 @@ SINGLE_VALUES = [
   (0x348FF, "WaterfallPotion", 1, "item"),
 ]
 
+# Data and behavior flags in the z3randomizer $B0:8000 block. Only a subset
+# is consumed by the C importer; the rest is recorded in seed.json so the
+# coverage/docs can name what this seed asks for.
+Z3R_SETTINGS = [
+  ("digging_game_rng", 0x180020, 1),
+  ("chest_game_rng", 0x180021, 1),
+  ("mire_required_medallion", 0x180022, 1),
+  ("trock_required_medallion", 0x180023, 1),
+  ("big_fairy_health", 0x180024, 1),
+  ("big_fairy_magic", 0x180025, 1),
+  ("spawn_npc_health", 0x180026, 1),
+  ("spawn_npc_magic", 0x180027, 1),
+  ("enable_easter_eggs", 0x180031, 1),
+  ("heart_beep", 0x180033, 1),
+  ("rupoor_deduction", 0x180036, 2),
+  ("lamp_cone_sewers", 0x180038, 1),
+  ("item_counter_hud", 0x180039, 1),
+  ("map_hud_mode", 0x18003A, 1),
+  ("map_mode", 0x18003B, 1),
+  ("compass_mode", 0x18003C, 1),
+  ("persistent_floodgate", 0x18003D, 1),
+  ("hammerable_ganon", 0x18003F, 1),
+  ("allow_swordless_medallion_use", 0x180041, 1),
+  ("permit_sq_from_bosses", 0x180042, 1),
+  ("allow_hammer_tablets", 0x180044, 1),
+  ("hud_dungeon_items", 0x180045, 1),
+  ("menu_speed", 0x180048, 1),
+  ("menu_collapse", 0x180049, 1),
+  ("inverted", 0x18004A, 1),
+  ("quick_swap", 0x18004B, 1),
+  ("smith_travels_freely", 0x18004C, 1),
+  ("escape_assist", 0x18004D, 1),
+  ("uncle_refill", 0x18004E, 1),
+  ("byrna_invulnerability", 0x18004F, 1),
+  ("upgrade_5_bombs_refill", 0x180080, 1),
+  ("upgrade_10_bombs_refill", 0x180081, 1),
+  ("upgrade_5_arrows_refill", 0x180082, 1),
+  ("upgrade_10_arrows_refill", 0x180083, 1),
+  ("potion_health_refill", 0x180084, 1),
+  ("potion_magic_refill", 0x180085, 1),
+  ("ganon_agah_rng", 0x180086, 1),
+  ("is_encrypted", 0x180087, 2),
+  ("turtle_rock_auto_open_fix", 0x180089, 1),
+  ("block_castle_doors_in_rain", 0x18008A, 1),
+  ("fake_boots", 0x18008E, 1),
+  ("progressive_sword_limit", 0x180090, 1),
+  ("progressive_sword_replacement", 0x180091, 1),
+  ("progressive_shield_limit", 0x180092, 1),
+  ("progressive_shield_replacement", 0x180093, 1),
+  ("progressive_armor_limit", 0x180094, 1),
+  ("progressive_armor_replacement", 0x180095, 1),
+  ("bottle_limit", 0x180096, 1),
+  ("bottle_replacement", 0x180097, 1),
+  ("progressive_bow_limit", 0x180098, 1),
+  ("progressive_bow_replacement", 0x180099, 1),
+  ("one_mind_player_count", 0x18009A, 1),
+  ("one_mind_timer", 0x18009B, 2),
+  ("dungeon_map_icons", 0x18009D, 1),
+  ("bugfix_mirrorless_sq", 0x1800A0, 1),
+  ("bugfix_swamp_water_level", 0x1800A1, 1),
+  ("bugfix_pre_aga_dw_dungeon_death", 0x1800A2, 1),
+  ("bugfix_set_world_on_agahnim_death", 0x1800A3, 1),
+  ("bugfix_pod_eg", 0x1800A4, 1),
+  ("goal_item_icon", 0x180165, 2),
+  ("goal_item_requirement", 0x180167, 2),
+  ("agahnim_door_style", 0x180169, 1),
+  ("free_item_text", 0x18016A, 1),
+  ("ganon_pyramid_respawn", 0x180171, 1),
+  ("generic_keys", 0x180172, 1),
+  ("fix_fake_world", 0x180174, 1),
+  ("server_request_mode", 0x180193, 1),
+  ("turn_in_goal_items", 0x180194, 1),
+  ("byrna_cave_spike_damage", 0x180195, 1),
+  ("total_item_count", 0x180196, 2),
+  ("ganons_tower_open_target", 0x18019A, 2),
+  ("ganons_tower_open_mode", 0x18019C, 2),
+  ("ped_pull_target", 0x1801A0, 2),
+  ("ped_check_mode", 0x1801A2, 2),
+  ("ganon_vulnerable_target", 0x1801A6, 2),
+  ("ganon_vulnerable_mode", 0x1801A8, 2),
+  ("randomizer_seed_type", 0x180210, 1),
+  ("game_type", 0x180211, 1),
+  ("warning_flags", 0x180212, 1),
+  ("tournament_seed", 0x180213, 1),
+  ("tournament_seed_inverse", 0x180214, 1),
+  ("no_bgm", 0x18021A, 1),
+  ("fast_fanfare", 0x18021B, 1),
+]
+Z3R_STARTING_AREA_EXIT_OFFSET_OFF = 0x180240
+Z3R_STARTING_AREA_OVERWORLD_DOOR_OFF = 0x180247
+Z3R_STARTING_AREA_EXIT_TABLE_OFF = 0x180250
+Z3R_EXTRA_HOLE_MAP16_OFF = 0x180300
+Z3R_EXTRA_HOLE_AREA_OFF = 0x180320
+Z3R_EXTRA_HOLE_ENTRANCE_OFF = 0x180340
+Z3R_SHOULD_START_AT_EXIT_OFF = 0x180350
+Z3R_CRYSTAL_PENDANT_FLAGS_OFF = 0x180050
+
+# z3r starting-point tables in the JP 1.0 base. The block is contiguous and
+# starts at $82:D8D2 (the table read by AllowStartFromExit); the seed patch
+# writes the inverted start rows here.
+Z3R_STARTING_POINTS_OFF = 0x158D2
+Z3R_STARTING_POINT_TABLE_LAYOUT = (
+  ("rooms", 7, "u16"),
+  ("relative_coords", 56, "u8"),
+  ("scroll_x", 7, "u16"),
+  ("scroll_y", 7, "u16"),
+  ("player_y", 7, "u16"),
+  ("player_x", 7, "u16"),
+  ("camera_y", 7, "u16"),
+  ("camera_x", 7, "u16"),
+  ("blockset", 7, "u8"),
+  ("floor", 7, "i8"),
+  ("palace", 7, "u8"),
+  ("starting_bg", 7, "u8"),
+  ("quadrant1", 7, "u8"),
+  ("quadrant2", 7, "u8"),
+  ("door_settings", 7, "u16"),
+)
+
+# The inverted overworld tile patches live in the z3r bank $A4. The hook at
+# $82:ED51 is a JSL to Overworld_LoadNewTiles; the routine loads the pointer
+# table with LDA.l. Both the hook and the table are located from the ROM so
+# a future z3r build with different addresses still imports correctly.
+Z3R_INVERTED_MAP_HOOK_OFF = 0x16D51
+Z3R_INVERTED_MAP_BANK = 0xA4
+
 CHEST_TABLE_OFF = 0xE96E
 CHEST_TABLE_RECORDS = 168
 
@@ -461,6 +589,459 @@ def read_u16(rom, off):
   return rom[off] | (rom[off + 1] << 8)
 
 
+def read_z3r_settings(rom):
+  values = {}
+  for name, off, size in Z3R_SETTINGS:
+    values[name] = rom[off] if size == 1 else read_u16(rom, off)
+  values["starting_area_exit_offset"] = list(
+    rom[Z3R_STARTING_AREA_EXIT_OFFSET_OFF:
+        Z3R_STARTING_AREA_EXIT_OFFSET_OFF + 7])
+  values["starting_area_overworld_door"] = list(
+    rom[Z3R_STARTING_AREA_OVERWORLD_DOOR_OFF:
+        Z3R_STARTING_AREA_OVERWORLD_DOOR_OFF + 7])
+  values["starting_area_exit_table"] = list(
+    rom[Z3R_STARTING_AREA_EXIT_TABLE_OFF:
+        Z3R_STARTING_AREA_EXIT_TABLE_OFF + 80])
+  values["extra_hole_map16"] = list(read_u16(rom, Z3R_EXTRA_HOLE_MAP16_OFF + i * 2)
+                                    for i in range(16))
+  values["extra_hole_area"] = list(read_u16(rom, Z3R_EXTRA_HOLE_AREA_OFF + i * 2)
+                                   for i in range(16))
+  values["extra_hole_entrance"] = list(
+    rom[Z3R_EXTRA_HOLE_ENTRANCE_OFF:Z3R_EXTRA_HOLE_ENTRANCE_OFF + 16])
+  values["should_start_at_exit"] = list(
+    rom[Z3R_SHOULD_START_AT_EXIT_OFF:Z3R_SHOULD_START_AT_EXIT_OFF + 3])
+  values["crystal_pendant_flags"] = list(
+    rom[Z3R_CRYSTAL_PENDANT_FLAGS_OFF:
+        Z3R_CRYSTAL_PENDANT_FLAGS_OFF + 13])
+  return values
+
+
+PALETTE_OVERWORLD_BG_MAIN_OFF = 0xDE6C8
+PALETTE_OVERWORLD_BG_MAIN_SIZE = 420
+PALETTE_OVERWORLD_BG_AUX12_OFF = 0xDE86C
+PALETTE_OVERWORLD_BG_AUX12_SIZE = 840
+
+
+def read_overworld_palettes(rom):
+  """JP 1.0 overworld palette tables; they differ from the US assets."""
+  if len(rom) < PALETTE_OVERWORLD_BG_AUX12_OFF + PALETTE_OVERWORLD_BG_AUX12_SIZE:
+    return None
+  return {
+    "bg_main": rom[PALETTE_OVERWORLD_BG_MAIN_OFF:
+                   PALETTE_OVERWORLD_BG_MAIN_OFF + PALETTE_OVERWORLD_BG_MAIN_SIZE].hex(),
+    "bg_aux12": rom[PALETTE_OVERWORLD_BG_AUX12_OFF:
+                    PALETTE_OVERWORLD_BG_AUX12_OFF + PALETTE_OVERWORLD_BG_AUX12_SIZE].hex(),
+  }
+
+
+SIGN_TEXT_HC_LEFT_PC = 0x3F52D
+SIGN_TEXT_HC_RIGHT_PC = 0x3F52F
+
+
+HC_SIGN_US_IDS = {0x190: 0x3C, 0x191: 0x3E}
+
+
+def read_hc_sign_text(rom):
+  """The two inverted Hyrule Castle sign ids from $87:F52D/F52F.
+
+  The seed stores JP message ids $190/$191; the engine dialogue table has
+  no such entries, so they are translated to the unused US sign ids $3C/$3E
+  and the imported dialogue overrides those two entries.
+  """
+  if len(rom) < SIGN_TEXT_HC_RIGHT_PC + 2:
+    return None
+  left = read_u16(rom, SIGN_TEXT_HC_LEFT_PC)
+  right = read_u16(rom, SIGN_TEXT_HC_RIGHT_PC)
+  return {
+    "hc_left": HC_SIGN_US_IDS.get(left, left),
+    "hc_right": HC_SIGN_US_IDS.get(right, right),
+  }
+
+
+def read_starting_points(rom):
+  out = {}
+  off = Z3R_STARTING_POINTS_OFF
+  for name, count, kind in Z3R_STARTING_POINT_TABLE_LAYOUT:
+    size = 1 if kind in ("u8", "i8") else 2
+    values = []
+    for i in range(count):
+      if kind == "u8":
+        values.append(rom[off + i])
+      elif kind == "i8":
+        value = rom[off + i]
+        values.append(value - 256 if value >= 128 else value)
+      else:
+        values.append(read_u16(rom, off + i * 2))
+    out[name] = values
+    off += count * size
+  return out
+
+
+def _z3r_pc(bank, addr):
+  return (bank & 0x7f) * 0x8000 + (addr & 0x7fff)
+
+
+def _read_inverted_map_stream(rom, base, start, stop=None):
+  """Interpret the z3r overworld tile patch command stream."""
+  out = []
+  customs = []
+  p = start
+  for _ in range(20000):
+    if stop is not None and p >= stop:
+      break
+    word = read_u16(rom, p)
+    p += 2
+    if word == 0xFFFF:  # !OWW_END
+      break
+    if word & 0x8000:
+      command = word & 0x7f
+      increment = 0x80 if (word & 0x80) else 2
+      if command == 0x00:  # stripe
+        cursor = read_u16(rom, p)
+        p += 2
+        while True:
+          tile = read_u16(rom, p)
+          p += 2
+          if tile & 0x8000:
+            if tile == 0xFFFF:  # !OWW_SKIP
+              continue
+            out.append([cursor, tile & 0x7fff])
+            break
+          out.append([cursor, tile])
+          cursor += increment
+      elif command in (0x01, 0x02):  # stripe RLE / RLE increment
+        count = (word >> 8) & 0x7f
+        tile = read_u16(rom, p)
+        cursor = read_u16(rom, p + 2)
+        p += 4
+        for i in range(count):
+          out.append([cursor, tile + i if command == 0x02 else tile])
+          cursor += increment
+      elif command == 0x03:  # arbitrary tile copy
+        tile = read_u16(rom, p)
+        p += 2
+        while True:
+          addr = read_u16(rom, p)
+          p += 2
+          if addr & 0x8000:
+            out.append([addr & 0x7fff, tile])
+            break
+          out.append([addr, tile])
+      elif command == 0x0d:  # skip if inverted
+        target = read_u16(rom, p)
+        p = base + (target & 0x7fff)
+      elif command == 0x0e:  # skip if not inverted (inverted: fall through)
+        p += 2
+      elif command == 0x0f:  # inverted only
+        pass
+      elif command == 0x10:  # custom command
+        vector = read_u16(rom, p)
+        p += 2
+        vector_pc = base + (vector & 0x7fff)
+        no_hole = None
+        for i in range(vector_pc, vector_pc + 16):
+          if rom[i] == 0xA0:  # LDY #no_hole
+            no_hole = read_u16(rom, i + 1)
+            break
+        customs.append([vector, no_hole, p])
+        if no_hole is not None:
+          hole, _, _, _ = _read_inverted_map_stream(
+              rom, base, p, base + (no_hole & 0x7fff))
+          tail, _, _, _ = _read_inverted_map_stream(
+              rom, base, base + (no_hole & 0x7fff))
+          return out, hole, tail, customs
+      else:
+        return out, None, None, customs
+    else:
+      tile = word
+      pos = read_u16(rom, p)
+      p += 2
+      out.append([pos, tile])
+  return out, None, None, customs
+
+
+def read_mirror_bonk(rom):
+  """MirrorBonk rectangles from the z3r bank $A4 ($87:A9AC hook)."""
+  hook = 0x3A9AC
+  if rom[hook] != 0x5C:
+    return None
+  target = rom[hook + 1] | rom[hook + 2] << 8 | rom[hook + 3] << 16
+  target_pc = _z3r_pc(target >> 16, target & 0xffff)
+  table = None
+  for i in range(target_pc, target_pc + 0x60):
+    if rom[i] == 0xBF and rom[i + 3] == Z3R_INVERTED_MAP_BANK:
+      addr = rom[i + 1] | rom[i + 2] << 8
+      if table is None or addr < table:
+        table = addr
+  if table is None:
+    return None
+  base = _z3r_pc(Z3R_INVERTED_MAP_BANK, 0)
+  table_pc = base + (table & 0x7fff)
+  # The build's table ends at $B8 (23 entries); the 24th slot is data that
+  # belongs to the next table.
+  rects = []
+  for i in range(23):
+    rects.append([read_u16(rom, table_pc + i * 8 + 2 * j) for j in range(4)])
+  return rects
+
+
+TR_TILE_ATTRIBUTES_PC = 0x121E1C
+TR_TILE_ATTRIBUTES_SIZE = 512
+
+
+def read_tr_tile_attributes(rom):
+  """Inverted Turtle Rock collision table from the z3r bank $A4."""
+  if len(rom) < TR_TILE_ATTRIBUTES_PC + TR_TILE_ATTRIBUTES_SIZE:
+    return None
+  return rom[TR_TILE_ATTRIBUTES_PC:
+             TR_TILE_ATTRIBUTES_PC + TR_TILE_ATTRIBUTES_SIZE].hex()
+
+
+def read_inverted_map_patches(rom):
+  if len(rom) <= Z3R_INVERTED_MAP_HOOK_OFF + 3:
+    return None
+  hook = rom[Z3R_INVERTED_MAP_HOOK_OFF:Z3R_INVERTED_MAP_HOOK_OFF + 4]
+  if hook[0] != 0x22:
+    return None
+  target = hook[1] | hook[2] << 8 | hook[3] << 16
+  target_pc = _z3r_pc(target >> 16, target & 0xffff)
+  table = None
+  for i in range(target_pc, target_pc + 0x40):
+    if rom[i] == 0xBF and rom[i + 3] == Z3R_INVERTED_MAP_BANK:
+      table = rom[i + 1] | rom[i + 2] << 8 | rom[i + 3] << 16
+      break
+  if table is None:
+    return None
+  bank = table >> 16
+  base = _z3r_pc(bank, 0)
+  table_pc = _z3r_pc(bank, table & 0xffff)
+  screens = []
+  for screen in range(128):
+    pointer = read_u16(rom, table_pc + screen * 2)
+    if pointer == 0:
+      continue
+    writes, hole, tail, customs = _read_inverted_map_stream(
+        rom, base, base + (pointer & 0x7fff))
+    entry = {"screen": screen, "writes": writes}
+    if hole is not None:
+      entry["hole"] = hole
+      entry["no_hole"] = tail
+    for vector, no_hole, _ in customs:
+      if screen == 0x5B and no_hole is None:
+        entry["warp"] = {"addr": 0x3BBE, "low": 0x34, "high": 0x212}
+    screens.append(entry)
+  return {"format": 1, "screens": screens}
+
+
+# z3r keeps its English script in the JP raw-text format at $9C:8000. The
+# bytes are direct glyph indexes (not the vanilla US compression), with $FB
+# closing each message and $F6..$FF acting as commands. The character map is
+# the one shipped as data/textbytecharmap.txt in z3randomizer.
+Z3R_TEXT_PC = 0xE0000
+Z3R_TEXT_END = 0xF356
+Z3R_ADVANCE_PC = 0xE7261   # $9C:F261
+Z3R_EXTRA_PC = 0xE72F9     # $9C:F2F9
+Z3R_CHARMAP = {
+  0x9D: "'", 0xAA: "A", 0xAB: "B", 0xAC: "C", 0xAD: "D", 0xAE: "E",
+  0xAF: "F", 0xB0: "G", 0xB1: "H", 0xB2: "I", 0xB3: "J", 0xB4: "K",
+  0xB5: "L", 0xB6: "M", 0xB7: "N", 0xB8: "O", 0xB9: "P", 0xBA: "Q",
+  0xBB: "R", 0xBC: "S", 0xBD: "T", 0xBE: "U", 0xBF: "V", 0xC0: "W",
+  0xC1: "X", 0xC2: "Y", 0xC3: "Z", 0xC6: "?", 0xC7: "!", 0xC8: ",",
+  0xC9: "-", 0xCD: ".", 0xCE: "-", 0xEA: "-", 0xD0: "a", 0xD1: "b",
+  0xD2: "c", 0xD3: "d", 0xD4: "e", 0xD5: "f", 0xD6: "g", 0xD7: "h",
+  0xD8: "i", 0xD9: "j", 0xDA: "k", 0xDB: "l", 0xDC: "m", 0xDD: "n",
+  0xDE: "o", 0xDF: "p", 0xE0: "q", 0xE1: "r", 0xE2: "s", 0xE3: "t",
+  0xE4: "u", 0xE5: "v", 0xE6: "w", 0xE7: "x", 0xE8: "y", 0xE9: "z",
+}
+for _digit in range(10):
+  Z3R_CHARMAP[0xA0 + _digit] = str(_digit)
+
+US_DIALOGUE_COUNT = 397
+_text_compression = None
+
+
+def text_compression_module():
+  global _text_compression
+  if _text_compression is None:
+    sys.path.insert(0, os.path.join(ROOT, "assets"))
+    import text_compression
+    _text_compression = text_compression
+  return _text_compression
+
+
+def us_to_jp_message_id(us_id):
+  # Kept in sync with SeedOracle_JpMessageId() in src/mod/seed_oracle.c.
+  if us_id == 0x16:
+    return 0x17
+  if 0x2F <= us_id <= 0x183:
+    return us_id - 2
+  if us_id in (0x184, 0x185):
+    return 0x182
+  return us_id
+
+
+def read_jp_text_table(rom):
+  if len(rom) < Z3R_TEXT_PC + (Z3R_TEXT_END - 0x8000):
+    return []
+  table = [0x8000]
+  ptr = 0x8000
+  for _ in range(0x10000):
+    old = ptr
+    c = rom[Z3R_TEXT_PC + old - 0x8000]
+    y = c if c >= 0xF6 else 0xF5
+    ptr += rom[Z3R_ADVANCE_PC + y]
+    if y == 0xFE:
+      y2 = rom[Z3R_TEXT_PC + old + 1 - 0x8000]
+      if rom[Z3R_EXTRA_PC + y2] & 0x80:
+        ptr += 1
+    if y == 0xFB:
+      table.append(ptr)
+      if ptr == Z3R_TEXT_END:
+        return table
+  return table
+
+
+def decode_jp_message(rom, offset):
+  """Decode one z3r raw-text message into modkit dialogue syntax.
+
+  Returns None when the message uses a glyph/command that has no safe US
+  counterpart, so the base US message stays untouched.
+  """
+  end = Z3R_TEXT_PC + Z3R_TEXT_END - 0x8000
+  pos = Z3R_TEXT_PC + offset - 0x8000
+  out = []
+  while pos < end:
+    c = rom[pos]
+    if c == 0xFB:
+      text = "".join(out)
+      while "[Scroll][Scroll]" in text:
+        text = text.replace("[Scroll][Scroll]", "[Scroll]")
+      return text
+    if c in Z3R_CHARMAP:
+      out.append(Z3R_CHARMAP[c])
+      pos += 1
+    elif c == 0xFF:
+      out.append(" ")
+      pos += 1
+    elif c in (0xF7, 0xF8, 0xF9):
+      out.append({0xF7: "[1]", 0xF8: "[2]", 0xF9: "[3]"}[c])
+      pos += 1
+    elif c in (0xF6, 0xFA):
+      out.append("[Scroll]")
+      pos += 1
+    elif c == 0x9F:
+      out.append("...")
+      pos += 1
+    elif c == 0xFC:
+      if pos + 1 >= end or rom[pos + 1] > 0x0F:
+        return None
+      out.append("[Speed %02d]" % rom[pos + 1])
+      pos += 2
+    elif c == 0xFD:
+      # Two-byte icon/glyph. Drop the icon but keep the readable text.
+      pos += 2
+    elif c == 0xFE:
+      if pos + 1 >= end:
+        return None
+      sub = rom[pos + 1]
+      param = rom[pos + 2] if pos + 2 < end else 0
+      if sub == 0x6B and param <= 0x0F:
+        out.append("[Speed %02d]" % param)
+        pos += 3
+      elif sub == 0x6C and param <= 0x0F:
+        out.append("[Number %02d]" % param)
+        pos += 3
+      elif sub == 0x68:
+        out.append("[Choose]")
+        pos += 2
+      else:
+        return None
+    else:
+      return None
+  return None
+
+
+def read_jp_dialogue(rom):
+  table = read_jp_text_table(rom)
+  return [decode_jp_message(rom, off) for off in table]
+
+
+def seed_dialogue_overlay(rom):
+  """Map C 0-based message indexes to seed text for modkit dialogue.txt ids."""
+  messages = read_jp_dialogue(rom)
+  tc = text_compression_module()
+  overlay = {}
+  for us_index in range(US_DIALOGUE_COUNT):
+    jp_index = us_to_jp_message_id(us_index)
+    if jp_index >= len(messages):
+      continue
+    text = messages[jp_index]
+    if not text or not any(ch.isalnum() for ch in text):
+      continue
+    try:
+      tc.compress_strings([text], "us")
+    except Exception:
+      continue
+    overlay[us_index + 1] = text
+  # The inverted Hyrule Castle signs point at JP messages $190/$191, which
+  # are beyond the US message count. Keep those ids so the engine can use the
+  # imported text directly.
+  if rom[0x18004A]:
+    for jp_id, us_id in HC_SIGN_US_IDS.items():
+      if jp_id >= len(messages):
+        continue
+      text = messages[jp_id]
+      if not text or not any(ch.isalnum() for ch in text):
+        continue
+      try:
+        tc.compress_strings([text], "us")
+      except Exception:
+        continue
+      overlay[us_id] = text
+  return overlay
+
+
+NPC_ITEM_IDS = {
+  "MoonPearl": 0x1F,
+  "Bottle": 0x16,
+  "TenArrows": 0x44,
+  "PieceOfHeart": 0x17,
+  "ThreeBombs": 0x28,
+  "TwentyRupees": 0x42,
+}
+
+
+def read_npc_items(seed):
+  """The four NPC rewards that live outside the fixed z3r tables."""
+  if not seed:
+    return None
+  spoiler = seed.get("spoiler", {})
+  entries = {}
+  for region in spoiler.values():
+    if isinstance(region, dict):
+      entries.update(region)
+  out = {}
+  for key, name in (("old_man", "Old Man:1"),
+                    ("sick_kid", "Sick Kid:1"),
+                    ("sahasrahla", "Sahasrahla:1"),
+                    ("catfish", "Catfish:1")):
+    value = entries.get(name)
+    if not isinstance(value, str):
+      continue
+    item_name = value.rsplit(":", 1)[0]
+    item = NPC_ITEM_IDS.get(item_name)
+    if item is not None:
+      out[key] = item
+  return out or None
+
+
+def fnv1a32(data):
+  value = 2166136261
+  for byte in data:
+    value = ((value ^ byte) * 16777619) & 0xFFFFFFFF
+  return value
+
+
 def item_name(value):
   return ITEM_NAMES.get(value, "unknown (0x%02X)" % value)
 
@@ -611,10 +1192,17 @@ def read_shop_locations(rom):
   for i in range(32):
     off = SHOP_TABLE_OFF + i * 8
     shop_id = rom[off]
-    if shop_id == 0xFF:
-      break
     room = rom[off + 1] | (rom[off + 2] << 8)
-    shops[shop_id] = {"room": room, "door": rom[off + 3]}
+    # 0xFF is a valid shop id (the tenth shop in this build); the table
+    # terminator is the first empty record after it.
+    if shop_id == 0 and room == 0 and rom[off + 3] == 0:
+      break
+    shops[shop_id] = {
+      "room": room,
+      "door": rom[off + 3],
+      # ShopTable+5 bit 0x40: ignore the overworld door when matching.
+      "any_door": bool(rom[off + 5] & 0x40),
+    }
 
   locations = []
   per_shop = {}
@@ -622,17 +1210,22 @@ def read_shop_locations(rom):
     off = SHOP_CONTENTS_OFF + i * 8
     shop_id = rom[off]
     value = rom[off + 1]
-    if shop_id == 0xFF or value == 0xFF:
+    if value == 0xFF:
       break
     slot = per_shop.get(shop_id, 0)
     per_shop[shop_id] = slot + 1
     price = read_u16(rom, off + 2)
     room = shops.get(shop_id, {}).get("room", -1)
+    door = shops.get(shop_id, {}).get("door", 0)
+    any_door = shops.get(shop_id, {}).get("any_door", True)
     loc_id = "shop:%d:%d" % (shop_id, slot)
     locations.append(make_location(
-      "shop", loc_id, "shop %d slot %d%s" % (
-        shop_id, slot, " room 0x%03X" % room if room >= 0 else ""),
-      value, shop=shop_id, slot=slot, price=price, room=room))
+      "shop", loc_id, "shop %d slot %d%s%s" % (
+        shop_id, slot,
+        " room 0x%03X" % room if room >= 0 else "",
+        " door 0x%02X" % door if door else ""),
+      value, shop=shop_id, slot=slot, price=price, room=room,
+      door=door, any_door=any_door))
   return locations
 
 
@@ -675,6 +1268,39 @@ def safe_name(value):
   return "".join(c if c.isalnum() or c in "-_" else "_" for c in value)
 
 
+NEWFONT_INVERTED_PC = 0x19AC00
+NEWFONT_INVERTED_SIZE = 4096
+
+
+def write_inverted_font(rom, out_path):
+  """Write the seed's NewFontInverted glyphs into the modkit font.png."""
+  if len(rom) < NEWFONT_INVERTED_PC + NEWFONT_INVERTED_SIZE:
+    return False
+  template = os.path.join(ROOT, ".modkit", "base", "files", "font.png")
+  if not os.path.isfile(template):
+    return False
+  try:
+    from PIL import Image
+  except Exception:
+    return False
+  im = Image.open(template).convert("P")
+  data = rom[NEWFONT_INVERTED_PC:NEWFONT_INVERTED_PC + NEWFONT_INVERTED_SIZE]
+  w = 128 + 15
+  for i in range(256):
+    x, y = i % 16, i // 16
+    base = x * 9 + (y * 8 + (y >> 1)) * w
+    gx = (base + w) % w
+    gy = (base + w) // w
+    for yy in range(8):
+      d0 = data[i * 16 + yy * 2]
+      d1 = data[i * 16 + yy * 2 + 1]
+      for xx in range(8):
+        t = ((d0 >> xx) & 1) | (((d1 >> xx) & 1) << 1)
+        im.putpixel((gx + 7 - xx, gy + yy), 96 + t)
+  im.save(out_path, optimize=True)
+  return True
+
+
 def cmd_import(args):
   with open(args.rom, "rb") as f:
     rom = f.read()
@@ -684,12 +1310,14 @@ def cmd_import(args):
   name = seed_name_from_rom(rom, seed)
   mod_name = safe_name(name)
   locations = collect_locations(rom)
+  settings_only = args.only is not None and args.only.strip() == "settings"
   if args.only:
     wanted = {name.strip() for name in args.only.split(",") if name.strip()}
-    locations = [loc for loc in locations if loc["type"] in wanted]
+    locations = [] if settings_only else [
+      loc for loc in locations if loc["type"] in wanted]
   if args.room is not None:
     locations = [loc for loc in locations if loc.get("room") == args.room]
-  if not locations:
+  if not locations and not settings_only:
     die("no locations left after the import filters")
   counts = location_counts(locations)
 
@@ -720,6 +1348,14 @@ def cmd_import(args):
       "title": find_title(rom)[1],
     },
     "settings": settings,
+    "z3r_settings": read_z3r_settings(rom),
+    "starting_points": read_starting_points(rom),
+    "hc_sign_text": read_hc_sign_text(rom),
+    "npc_items": read_npc_items(seed),
+    "overworld_palettes": read_overworld_palettes(rom),
+    "overworld_patches": read_inverted_map_patches(rom),
+    "tr_tile_attributes": read_tr_tile_attributes(rom),
+    "mirror_bonk": read_mirror_bonk(rom),
     "save_template": rom[0x183000:0x183500].hex(),
     "locations": locations,
   }
@@ -742,9 +1378,36 @@ def cmd_import(args):
     json.dump(data, f, indent=2, ensure_ascii=False)
     f.write("\n")
 
+  dialogue_count = 0
+  font_written = False
+  if not args.no_dialogue:
+    overlay = seed_dialogue_overlay(rom)
+    if overlay:
+      content_dir = os.path.join(out_dir, "content")
+      os.makedirs(content_dir, exist_ok=True)
+      with open(os.path.join(content_dir, "dialogue.txt"), "w",
+                encoding="utf-8", newline="\n") as f:
+        for ident in sorted(overlay):
+          f.write("%d: %s\n" % (ident, overlay[ident]))
+      dialogue_count = len(overlay)
+      if rom[0x18004A]:
+        font_written = write_inverted_font(
+            rom, os.path.join(content_dir, "font.png"))
+      if args.build:
+        command = [sys.executable, os.path.join(ROOT, "tools", "modkit.py"),
+                   "build", out_dir]
+        result = subprocess.run(command, cwd=ROOT)
+        if result.returncode != 0:
+          die("modkit build failed for %s" % out_dir)
+
   print("seed-import: %s (title %s)" % (name, data["rom"]["title"]))
   print("seed-import: %d location(s): %s" %
         (len(locations), format_counts(counts)))
+  if dialogue_count:
+    print("seed-import: %d dialogue message(s) from the seed ROM%s" % (
+      dialogue_count, " (built)" if args.build else ""))
+  if font_written:
+    print("seed-import: inverted font imported from NewFontInverted")
   print("seed-import: mod written to %s" % out_dir)
 
 
@@ -827,6 +1490,24 @@ def cmd_coverage(args):
   print("seed-import: item rules in applied locations: %s%s" % (
     format_counts(rules),
     " (%d approximate)" % approximate if approximate else ""))
+
+  if args.json:
+    spoiler = load_seed(args.json).get("spoiler", {})
+    spoiler_locations = 0
+    for region, entries in spoiler.items():
+      if isinstance(entries, dict) and region not in (
+          "Equipped", "Special", "Bosses", "meta", "playthrough"):
+        spoiler_locations += len(entries)
+    for shop in spoiler.get("Shops", []):
+      for i in range(3):
+        if shop.get("item_%d" % i):
+          spoiler_locations += 1
+    special = len(spoiler.get("Special", {}))
+    print("seed-import: spoiler: %d item entries + %d special" % (
+      spoiler_locations, special))
+    if spoiler_locations != covered_count:
+      print("seed-import: spoiler/ROM difference: %d location(s) outside "
+            "the z3r tables" % (spoiler_locations - covered_count))
 
   if not args.summary:
     print("covered type      id                              seed  mod   rule")
@@ -947,15 +1628,60 @@ def cmd_verify_proof(args):
       print("seed-proof key: target %d is the current dungeon" % target,
             file=sys.stderr)
       return 1
-    needle = "seed-dungeon target=%d item=24" % target
-    found = False
-    if args.stderr:
-      with open(args.stderr, "r", encoding="utf-8", errors="replace") as f:
-        found = needle in f.read()
+    found = any(ev[1] == "SeedItem" and ev[2] == 0x24 and ev[3] == target
+                for ev in events)
     if not found:
-      print("seed-proof key: missing '%s' in stderr" % needle, file=sys.stderr)
+      print("seed-proof key: missing SeedItem 36 -> %d in the trace" % target,
+            file=sys.stderr)
       return 1
     print("seed-proof key: 0x%02X -> dungeon %d (current %d)" % (raw, target, current))
+    return 0
+
+  if args.proof == "shopdoor":
+    shops = read_shop_locations(rom)
+    expected = None
+    for loc in shops:
+      if loc.get("room") == 287 and loc.get("slot") == 0:
+        expected = loc.get("door")
+    if expected is None:
+      print("seed-proof shopdoor: shop 0 has no door in the seed", file=sys.stderr)
+      return 1
+    door = state.get("previous_overworld_door", -1)
+    if door != expected:
+      print("seed-proof shopdoor: expected door 0x%02X, got %s" % (
+        expected, door), file=sys.stderr)
+      return 1
+    bought = any(ev[1] == "ItemReceive" and ev[2] == 66 for ev in events)
+    if not bought:
+      print("seed-proof shopdoor: shop 0 did not receive item 0x42", file=sys.stderr)
+      return 1
+    print("seed-proof shopdoor: room 0x11F door 0x%02X -> item 0x42" % door)
+    return 0
+
+  if args.proof == "text":
+    if args.message_id is None:
+      print("seed-proof text: --message-id is required", file=sys.stderr)
+      return 1
+    jp_index = us_to_jp_message_id(args.message_id)
+    messages = read_jp_dialogue(rom)
+    if jp_index >= len(messages) or not messages[jp_index]:
+      print("seed-proof text: message %d has no safe seed text" % args.message_id,
+            file=sys.stderr)
+      return 1
+    text = messages[jp_index]
+    encoded = text_compression_module().compress_strings([text], "us")[0]
+    expected = fnv1a32(encoded)
+    found = any(ev[1] == "DialogueText" and ev[2] == args.message_id and
+                (ev[3] & 0xFFFFFFFF) == expected and ev[4] == len(encoded)
+                for ev in events)
+    if not found:
+      got = [(ev[3], ev[4]) for ev in events
+             if ev[1] == "DialogueText" and ev[2] == args.message_id]
+      print("seed-proof text: message %d expected %08X/%d, got %s" % (
+        args.message_id, expected, len(encoded), got), file=sys.stderr)
+      return 1
+    print("seed-proof text: message %d = %s (%08X)" % (
+      args.message_id, text, expected))
     return 0
 
   if args.proof == "start":
@@ -1245,11 +1971,15 @@ def main():
   m.add_argument("--json", help="optional seed JSON for settings")
   m.add_argument("-o", "--output",
                  help="mod directory (default: mods-seeds/<seed>)")
-  m.add_argument("--only", help="comma-separated location types to keep")
+  m.add_argument("--only", help="comma-separated location types to keep, or 'settings'")
   m.add_argument("--room", type=lambda value: int(value, 0),
                  help="keep only locations with this room/dungeon id")
   m.add_argument("--no-z3r-rules", action="store_true",
                  help="do not enable the Z3rRules feature in the mod")
+  m.add_argument("--no-dialogue", action="store_true",
+                 help="do not extract the z3r dialogue into content/dialogue.txt")
+  m.add_argument("--build", action="store_true",
+                 help="run modkit.py build after writing the dialogue content")
   m.set_defaults(func=cmd_import)
 
   c = sub.add_parser("coverage",
@@ -1258,6 +1988,7 @@ def main():
   c.add_argument("--mod", help="generated mod directory or seed.json")
   c.add_argument("--summary", action="store_true",
                  help="print only the summary lines")
+  c.add_argument("--json", help="seed JSON for the spoiler count check")
   c.set_defaults(func=cmd_coverage)
 
   v = sub.add_parser("verify-replay",
@@ -1270,10 +2001,12 @@ def main():
                      help="check one feature proof against the seed ROM")
   p.add_argument("--rom", required=True, help="seed ROM")
   p.add_argument("--proof", required=True,
-                 choices=["npc", "prize", "shop", "key", "start"])
+                 choices=["npc", "prize", "shop", "shopdoor", "key", "start", "text"])
   p.add_argument("--trace", help="captured --mod-trace output")
   p.add_argument("--stderr", help="captured stderr")
   p.add_argument("--state", help="captured --dump-state output")
+  p.add_argument("--message-id", type=lambda value: int(value, 0),
+                 help="C dialogue message index for --proof text")
   p.set_defaults(func=cmd_verify_proof)
   args = ap.parse_args()
   args.func(args)

@@ -1,25 +1,35 @@
 #!/usr/bin/env python3
-"""Closed-loop seed-oracle route search.
+"""Closed-loop seed-oracle route search and C-only chest smoke routes.
 
-Runs the native C game in seed mode (--seed-rom, no SNES comparison) and
-uses --dump-state after short action bursts to choose the next input.  The
-generated input tail can be appended to the seed replay and then verified
-with the strict --oracle-rom mode.
-
+The original mode runs the native C game with --seed-rom (no SNES
+comparison), uses --dump-state after short action bursts to choose the next
+input, and emits an input tail that the strict --oracle-rom mode verifies.
 The search is deliberately simple: a beam over the eight movement
 directions (plus "do nothing"), one burst of --step frames per level.  It
 prefers reducing the overworld screen distance to a waypoint, walking toward
 the matching screen edge, keeping health and avoiding deep water.
 
-Example:
+The --c-only mode runs the US engine with a generated seed mod and --load,
+never --seed-rom.  With --save it searches a short action sequence that opens
+a dungeon chest and compares the received item against the chest table in
+seed.json.  This is the smoke test that proves that a seed mod drives real
+chest contents.
+
+Examples:
   tools/seed_route.py --start 11200 --targets 0x25,0x20,0x18 \
       --beam 3 --step 60 --max-steps 30 --out /tmp/route.txt
+  tools/seed_route.py --c-only --mods-dir /tmp/seed-mods \
+      --save tests/replays-seed/seed-key.sav --room 170 \
+      --seed-json /tmp/seed-mods/seed/seed.json --frames 40 \
+      --out /tmp/chest-route.txt
 """
 
 import argparse
 import concurrent.futures
+import json
 import os
 import re
+import struct
 import subprocess
 import sys
 import tempfile
@@ -288,13 +298,138 @@ class Search:
         print(f"wrote {self.args.out}")
 
 
+def read_state_only(save_path, dest):
+    """Write a replay-free state file from the base snapshot of a .sav."""
+    with open(save_path, "rb") as f:
+        data = f.read()
+    if len(data) < 32:
+        sys.exit("seed-route: %s is too small" % save_path)
+    hdr = struct.unpack("<8I", data[:32])
+    log_size = hdr[2]
+    snap_size = hdr[6]
+    if snap_size == 0 or 32 + log_size + snap_size > len(data):
+        sys.exit("seed-route: %s has no valid state snapshot" % save_path)
+    # The base snapshot is the state before the recorded input. Without one,
+    # the file carries only the current state.
+    snap = data[32 + log_size:32 + log_size + snap_size]
+    out_hdr = struct.pack("<8I", 1, 0, 0, 0, 0, 1, snap_size, 0)
+    with open(dest, "wb") as f:
+        f.write(out_hdr)
+        f.write(snap)
+        f.write(snap)
+
+
+class ChestSearch:
+    def __init__(self, args):
+        self.args = args
+        self.state_path = os.path.join(tempfile.mkdtemp(prefix="seed-chest-"),
+                                       "state.sav")
+        read_state_only(args.save, self.state_path)
+
+    def script_for(self, actions):
+        lines = []
+        frame = 1
+        prev = None
+        for buttons in actions:
+            if buttons != prev:
+                lines.append("%d %s" % (frame, buttons))
+                prev = buttons
+            frame += self.args.chest_step
+        lines.append("%d -" % frame)
+        return "\n".join(lines) + "\n"
+
+    def run(self, script):
+        fd, path = tempfile.mkstemp(prefix="seed-chest-input-", suffix=".txt")
+        try:
+            with os.fdopen(fd, "w", newline="") as f:
+                f.write(script)
+            cmd = [
+                self.args.bin, "--config", self.args.config, "--headless",
+                "--mods-dir", self.args.mods_dir, "--load", self.state_path,
+                "--input-script", path, "--frames", str(self.args.frames),
+                "--mod-trace", "zelda3.sfc",
+            ]
+            p = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
+                               timeout=self.args.timeout)
+            events = []
+            for line in p.stdout.splitlines():
+                parts = line.split()
+                if len(parts) >= 5 and parts[0] == "ev":
+                    events.append(parts[1:])
+            return events, p.returncode, p.stderr
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    def candidates(self):
+        step = self.args.chest_step
+        singles = ["A", "Up", "Down", "Left", "Right"]
+        for a in singles:
+            yield [a] * step
+        for d in ("Up", "Down", "Left", "Right"):
+            yield [d] * step + ["%s A" % d] * step
+            yield ["A"] * step + ["A %s" % d] * step
+            yield ["%s A" % d] * step + [d] * step
+
+    def go(self):
+        with open(self.args.seed_json, "r", encoding="utf-8") as f:
+            seed = json.load(f)
+        expected = None
+        for loc in seed.get("locations", []):
+            if (loc.get("type") == "chest" and loc.get("room") == self.args.room
+                    and loc.get("index") == self.args.chest_index):
+                expected = loc
+                break
+        if expected is None:
+            sys.exit("seed-route: no chest room %d index %d in %s" % (
+                self.args.room, self.args.chest_index, self.args.seed_json))
+
+        for actions in self.candidates():
+            script = self.script_for(actions)
+            events, rc, err = self.run(script)
+            if rc != 0:
+                continue
+            opened = any(ev[1] == "ChestOpen" and int(ev[2]) == self.args.room
+                         for ev in events)
+            if not opened:
+                continue
+            received = [int(ev[2]) for ev in events if ev[1] == "ItemReceive"]
+            want = expected["item"]
+            ok = want in received
+            if want == 0x61:
+                # Progressive Lifting Glove is transformed by inventory.
+                ok = 0x1B in received or 0x1C in received
+            if 0xA0 <= want <= 0xAF:
+                # The seed table stores the dungeon key id; the engine maps it
+                # to a small-key receipt and reports the target dungeon.
+                key_dungeons = [13, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 0]
+                target = key_dungeons[want - 0xA0]
+                ok = any(ev[1] == "SeedItem" and int(ev[2]) == 0x24 and
+                         int(ev[3]) == target for ev in events)
+            if not ok:
+                sys.exit("seed-route: chest room %d opened, expected item 0x%02X, "
+                         "got %s" % (self.args.room, want,
+                                     ", ".join("0x%02X" % v for v in received)))
+            if self.args.out:
+                with open(self.args.out, "w", newline="") as f:
+                    f.write("# C-only chest route generated by tools/seed_route.py\n")
+                    f.write(script)
+            print("seed-route: chest room %d index %d -> item 0x%02X (%s)" % (
+                self.args.room, self.args.chest_index, want,
+                expected.get("item_name", "?")))
+            return
+        sys.exit("seed-route: no candidate opened chest room %d" % self.args.room)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bin", default=DEFAULT_BIN)
     ap.add_argument("--config", default=os.path.join(ROOT, "tests", "regress.ini"))
     ap.add_argument("--rom", default=DEFAULT_ROM)
     ap.add_argument("--replay", default=DEFAULT_REPLAY)
-    ap.add_argument("--start", type=int, required=True)
+    ap.add_argument("--start", type=int)
     ap.add_argument("--targets", default="0x18",
                     help="comma-separated overworld screen indexes")
     ap.add_argument("--step", type=int, default=60)
@@ -308,7 +443,27 @@ def main():
                     help="music_unk1 required for a stable 0x18 target (-1 disables)")
     ap.add_argument("--timeout", type=int, default=180)
     ap.add_argument("--out")
+    ap.add_argument("--c-only", action="store_true",
+                    help="run the US engine with --mods-dir instead of --seed-rom")
+    ap.add_argument("--mods-dir")
+    ap.add_argument("--save", help="replay .sav whose base snapshot starts the route")
+    ap.add_argument("--room", type=lambda s: int(s, 0),
+                    help="dungeon room for the C-only chest smoke test")
+    ap.add_argument("--chest-index", type=int, default=0,
+                    help="0-based chest index inside --room (seed.json order)")
+    ap.add_argument("--seed-json", help="generated seed.json for item comparison")
+    ap.add_argument("--frames", type=int, default=40)
+    ap.add_argument("--chest-step", type=int, default=8)
     args = ap.parse_args()
+    if args.save or args.c_only:
+        if not args.mods_dir:
+            ap.error("--c-only/--save need --mods-dir")
+        if not args.save or args.room is None or not args.seed_json:
+            ap.error("--c-only/--save need --save, --room and --seed-json")
+        ChestSearch(args).go()
+        return
+    if args.start is None:
+        ap.error("--start is required for the overworld search")
     Search(args).go()
 
 

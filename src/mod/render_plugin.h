@@ -51,7 +51,7 @@ enum {
   // Bump when a callback signature, a struct layout or the meaning of a field
   // in this API changes. Version 2 added preferred_scale (R-3); version 3 adds
   // the optional command callback used by the interactive camera/shadows
-  // controls (R-5).
+  // controls (R-5) and the camera level presets appended to the command enum.
   kRenderPluginApiVersion = 3,
 
   // Maximum number of pane descriptions per output frame.
@@ -72,6 +72,11 @@ typedef enum ZeldaRenderCommand {
   kRenderCommand_CameraReset = 7,
   kRenderCommand_ToggleShadows = 8,
   kRenderCommand_ToggleLighting = 9,
+  // Preset camera inclinations. The plugin eases toward the new angle, so a
+  // preset is a target and never a one-frame snap.
+  kRenderCommand_CameraLevelLow = 10,   // 15 degrees
+  kRenderCommand_CameraLevelMid = 11,   // 35 degrees
+  kRenderCommand_CameraLevelHigh = 12,  // 50 degrees
 } ZeldaRenderCommand;
 
 #define ZELDA_RENDER_PLUGIN_BUILTIN "builtin:ppu"

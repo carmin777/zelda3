@@ -29,6 +29,19 @@ briefing que veio na mensagem; faça só o que ele pede.
 9. Não invente: se algo do briefing não bater com o código, diga isso no
    relatório em vez de adivinhar.
 
+## Economia de contexto
+
+Tudo o que você lê fica no contexto e é relido em cada chamada seguinte.
+
+- Não leia arquivo inteiro acima de ~300 linhas: ache o trecho com `grep -n`
+  e leia só a faixa (`sed -n 'A,Bp'` ou leitura com offset/limite).
+- Filtre saídas longas. Para o gate:
+  `tools/regress.sh 2>&1 | grep -E '^ok|FAIL|fail|regress:' | tail -60`.
+  Para builds: `make -j2 2>&1 | grep -E 'warning|error' | head`.
+- Não despeje logs, JSON de frame-desc, dumps de RAM ou imagens inteiras no
+  contexto; extraia os números que interessam com um script curto.
+- Não releia um arquivo que você acabou de editar só para conferir.
+
 ## Relatório final
 
 Termine com uma mensagem curta contendo:

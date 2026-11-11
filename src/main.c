@@ -7,6 +7,7 @@
 #ifdef _WIN32
 #include "platform/win32/volume_control.h"
 #include <direct.h>
+#include <Windows.h>
 #else
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -24,6 +25,7 @@
 
 #include "config.h"
 #include "assets.h"
+#include "hud.h"
 #include "load_gfx.h"
 #include "util.h"
 #include "audio.h"
@@ -32,6 +34,7 @@
 #include "mod/draw.h"
 #include "mod/hooks.h"
 #include "mod/local_coop.h"
+#include "mod/menu.h"
 #include "mod/mods.h"
 #include "mod/nwa_server.h"
 #include "mod/shared_world.h"
@@ -72,6 +75,8 @@ static int g_hash_every;
 static bool g_mod_trace;
 static bool g_dump_state;
 static const char *g_screenshot_file;
+static const char *g_menu_test_file;
+static const char *g_menu_screenshot_page;
 static long g_nwa_hold_seconds;
 static long g_nwa_hold_at;
 static long g_force_sprite6b_frame = -1;
@@ -143,6 +148,13 @@ static SDL_JoystickID g_controller_ids[kMaxOpenControllers];
 static int g_controller_count;
 static int g_sdl_audio_mixer_volume = SDL_MIX_MAXVOLUME;
 static struct RendererFuncs g_renderer_funcs;
+// Last fully rendered game frame. The options menu reuses it while the game is
+// paused so redrawing the menu does not touch PPU/DMA state.
+static uint8 *g_frame_snapshot;
+static size_t g_frame_snapshot_size;
+static size_t g_frame_snapshot_pitch;
+static int g_frame_snapshot_width;
+static int g_frame_snapshot_height;
 static uint32 g_gamepad_modifiers[2];
 static uint16 g_gamepad_last_cmd[2][kGamepadBtn_Count];
 
@@ -293,6 +305,8 @@ static void RenderInstancePane(int index, uint8 *buffer, size_t pitch,
   ModDraw_BeginFrame(buffer, pitch, g_snes_width, g_snes_height, scale);
   MOD_EMIT(kModEv_FrameDraw, index, 2, 0);
   Coop_DrawOverlay(buffer, pitch, g_snes_width, g_snes_height, scale);
+  if (index == 0)
+    OptionsMenu_Draw();
   ModDraw_EndFrame();
 }
 
@@ -308,14 +322,35 @@ static void RenderWorldModOverlays(uint8 *buffer, size_t pitch, int scale,
       ModDraw_BeginFrame(pane, pitch, g_snes_width, g_snes_height, scale);
       MOD_EMIT(kModEv_FrameDraw, i, 2, 0);
       Coop_DrawOverlay(pane, pitch, g_snes_width, g_snes_height, scale);
+      if (i == 0)
+        OptionsMenu_Draw();
       ModDraw_EndFrame();
     }
   } else {
     ModDraw_BeginFrame(buffer, pitch, g_snes_width, g_snes_height, scale);
     MOD_EMIT(kModEv_FrameDraw, 0, 1, 0);
     Coop_DrawOverlay(buffer, pitch, g_snes_width, g_snes_height, scale);
+    OptionsMenu_Draw();
     ModDraw_EndFrame();
   }
+}
+
+static void CaptureFrameSnapshot(const uint8 *pixels, size_t pitch,
+                                 int width, int height) {
+  if (pixels == NULL || pitch == 0 || width <= 0 || height <= 0)
+    return;
+  size_t size = pitch * (size_t)height;
+  if (size > g_frame_snapshot_size) {
+    uint8 *new_buffer = realloc(g_frame_snapshot, size);
+    if (new_buffer == NULL)
+      return;
+    g_frame_snapshot = new_buffer;
+    g_frame_snapshot_size = size;
+  }
+  memcpy(g_frame_snapshot, pixels, size);
+  g_frame_snapshot_pitch = pitch;
+  g_frame_snapshot_width = width;
+  g_frame_snapshot_height = height;
 }
 
 static void DrawPpuFrameWithPerf() {
@@ -353,13 +388,49 @@ static void DrawPpuFrameWithPerf() {
   // split-screen the event runs once per pane.
   RenderWorldModOverlays(pixel_buffer, pitch, render_scale,
                          g_snes_width * render_scale);
+  CaptureFrameSnapshot(pixel_buffer, pitch,
+                       g_output_width * render_scale,
+                       g_output_height * render_scale);
 
   if (g_display_perf)
     RenderNumber(pixel_buffer + pitch * render_scale, pitch, g_curr_fps, render_scale == 4);
   g_renderer_funcs.EndDraw();
 }
 
+// Re-present the frozen game frame and draw the menu over it. This avoids
+// calling ZeldaDrawPpuFrame while paused: the PPU renderer intentionally writes
+// HDMA/PPU state that must not leak into the next simulated frame.
+static void DrawFrozenFrameWithMenu(void) {
+  int render_scale = EffectiveRenderScale();
+  int width = g_output_width * render_scale;
+  int height = g_output_height * render_scale;
+  uint8 *pixels = NULL;
+  int pitch = 0;
+  g_renderer_funcs.BeginDraw(width, height, &pixels, &pitch);
+  if (pixels == NULL || pitch == 0)
+    return;
+  memset(pixels, 0, (size_t)pitch * (size_t)height);
+  if (g_frame_snapshot != NULL) {
+    int copy_width = IntMin(width, g_frame_snapshot_width);
+    int copy_height = IntMin(height, g_frame_snapshot_height);
+    size_t copy_bytes = (size_t)copy_width * 4;
+    if (copy_bytes > g_frame_snapshot_pitch)
+      copy_bytes = g_frame_snapshot_pitch;
+    if (copy_bytes > (size_t)pitch)
+      copy_bytes = (size_t)pitch;
+    for (int y = 0; y < copy_height; y++) {
+      memcpy(pixels + (size_t)y * pitch,
+             g_frame_snapshot + (size_t)y * g_frame_snapshot_pitch, copy_bytes);
+    }
+  }
+  ModDraw_BeginFrame(pixels, pitch, g_snes_width, g_snes_height, render_scale);
+  OptionsMenu_Draw();
+  ModDraw_EndFrame();
+  g_renderer_funcs.EndDraw();
+}
+
 static SDL_mutex *g_audio_mutex;
+static SDL_AudioDeviceID g_audio_device;
 static uint8 *g_audiobuffer, *g_audiobuffer_cur, *g_audiobuffer_end;
 static int g_frames_per_block;
 static uint8 g_audio_channels;
@@ -390,6 +461,34 @@ static void SDLCALL AudioCallback(void *userdata, Uint8 *stream, int len) {
   if (g_emu_dsp == NULL)
     ZeldaDiscardUnusedAudioFrames();
   SDL_UnlockMutex(g_audio_mutex);
+}
+
+// Opens one SDL audio device with the requested channel count. The device is
+// returned paused, so the caller can swap the globals without a callback
+// racing against them.
+static bool OpenAudioDevice(int channels, SDL_AudioDeviceID *out_device,
+                            uint8 *out_channels, int *out_frames,
+                            uint8 **out_buffer) {
+  SDL_AudioSpec want = { 0 }, have;
+  want.freq = g_config.audio_freq;
+  want.format = AUDIO_S16;
+  want.channels = (Uint8)channels;
+  want.samples = g_config.audio_samples;
+  want.callback = &AudioCallback;
+  SDL_AudioDeviceID device = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+  if (device == 0)
+    return false;
+  int frames_per_block = (534 * have.freq) / 32000;
+  uint8 *buffer = malloc((size_t)frames_per_block * have.channels * sizeof(int16));
+  if (buffer == NULL) {
+    SDL_CloseAudioDevice(device);
+    return false;
+  }
+  *out_device = device;
+  *out_channels = have.channels;
+  *out_frames = frames_per_block;
+  *out_buffer = buffer;
+  return true;
 }
 
 // State for sdl renderer
@@ -543,35 +642,32 @@ static bool InitializeDisplayAndAudio(SDL_Window **out_window, SDL_AudioDeviceID
     return false;
 
   SDL_AudioDeviceID device = 0;
-  SDL_AudioSpec want = { 0 }, have;
   g_audio_mutex = SDL_CreateMutex();
   if (!g_audio_mutex) Die("No mutex");
 
   if (g_config.enable_audio) {
-    want.freq = g_config.audio_freq;
-    want.format = AUDIO_S16;
-    want.channels = g_config.audio_channels;
-    want.samples = g_config.audio_samples;
-    want.callback = &AudioCallback;
-    device = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
-    if (device == 0) {
+    if (!OpenAudioDevice(g_config.audio_channels, &device, &g_audio_channels,
+                         &g_frames_per_block, &g_audiobuffer)) {
       printf("Failed to open audio device: %s\n", SDL_GetError());
       return false;
     }
-    g_audio_channels = have.channels;
-    g_frames_per_block = (534 * have.freq) / 32000;
-    g_audiobuffer = malloc(g_frames_per_block * have.channels * sizeof(int16));
+    g_audio_device = device;
+    g_config.audio_channels = g_audio_channels;
   }
+
+  if (g_config.volume_set)
+    MenuHost_SetVolume(g_config.volume);
 
   *out_window = window;
   *out_device = device;
   return true;
 }
 
-static void ShutdownDisplayAndAudio(SDL_Window *window, SDL_AudioDeviceID device) {
-  if (g_config.enable_audio) {
-    SDL_PauseAudioDevice(device, 1);
-    SDL_CloseAudioDevice(device);
+static void ShutdownDisplayAndAudio(SDL_Window *window) {
+  if (g_audio_device != 0) {
+    SDL_PauseAudioDevice(g_audio_device, 1);
+    SDL_CloseAudioDevice(g_audio_device);
+    g_audio_device = 0;
   }
 
   SDL_DestroyMutex(g_audio_mutex);
@@ -707,6 +803,16 @@ int main(int argc, char** argv) {
         Die("--screenshot expects a .ppm file");
       g_screenshot_file = argv[1];
       argc -= 2, argv += 2;
+    } else if (strcmp(argv[0], "--menu-test") == 0) {
+      if (argc < 2 || argv[1][0] == 0)
+        Die("--menu-test expects a zelda3.user.ini path");
+      g_menu_test_file = argv[1];
+      argc -= 2, argv += 2;
+    } else if (strcmp(argv[0], "--menu-screenshot") == 0) {
+      if (argc < 2 || argv[1][0] == 0)
+        Die("--menu-screenshot expects a page name");
+      g_menu_screenshot_page = argv[1];
+      argc -= 2, argv += 2;
     } else if (strcmp(argv[0], "--force-sprite6b") == 0) {
       if (argc < 2 || !ParseLongArg(argv[1], &value) || value < 1 || value > 100000000)
         Die("--force-sprite6b expects a positive frame number");
@@ -738,8 +844,8 @@ int main(int argc, char** argv) {
       Die("Unknown command line option");
     }
   }
-  if (!g_headless && (g_replay_ref >= 0 || g_replay_file || g_load_file || g_save_replay_file || g_stop_replay_at > 0 || g_input_script_file || g_input_script2_file || g_local_player || g_max_frames >= 0 || g_hash_every != 0 || g_dump_state || g_screenshot_file || g_nwa_hold_seconds || g_nwa_hold_at || g_force_sprite6b_frame >= 0 || g_frame_check || g_frame_desc_capture || g_frame_desc_draw || g_frame_plugin_draw || g_frame_desc_dump_frame >= 0))
-    Die("--replay, --replay-ref, --load, --input-script, --input-script2, --local-player, --frames, --hash-every, --dump-state, --screenshot, --nwa-hold, --force-sprite6b and the frame description options require --headless");
+  if (!g_headless && (g_replay_ref >= 0 || g_replay_file || g_load_file || g_save_replay_file || g_stop_replay_at > 0 || g_input_script_file || g_input_script2_file || g_local_player || g_max_frames >= 0 || g_hash_every != 0 || g_dump_state || g_screenshot_file || g_menu_test_file || g_menu_screenshot_page || g_nwa_hold_seconds || g_nwa_hold_at || g_force_sprite6b_frame >= 0 || g_frame_check || g_frame_desc_capture || g_frame_desc_draw || g_frame_plugin_draw || g_frame_desc_dump_frame >= 0))
+    Die("--replay, --replay-ref, --load, --input-script, --input-script2, --local-player, --frames, --hash-every, --dump-state, --screenshot, --menu-test, --menu-screenshot, --nwa-hold, --force-sprite6b and the frame description options require --headless");
   if (g_emu_rom_file && (g_replay_ref >= 0 || g_replay_file || g_load_file || g_save_replay_file || g_stop_replay_at > 0 || g_dump_state || g_frame_check || g_frame_desc_capture || g_frame_desc_draw || g_frame_plugin_draw || g_frame_desc_dump_frame >= 0))
     Die("--emu-rom cannot be combined with replay/load/save or frame description options");
   if (g_oracle_rom_file && (g_frame_check || g_frame_desc_capture || g_frame_desc_draw || g_frame_plugin_draw || g_frame_desc_dump_frame >= 0))
@@ -774,6 +880,14 @@ int main(int argc, char** argv) {
   if (g_config.coop_local && (g_emu_rom_file || g_oracle_rom_file))
     Die("[Coop] Local does not support --emu-rom or --oracle-rom");
   EmuSetSeedIgnoreKnownJp(g_oracle_ignore_jp);
+
+#ifdef _WIN32
+  // Mark the process DPI-aware before SDL creates any window, so Windows does
+  // not bitmap-scale it on monitors with display scaling enabled. This also
+  // covers the --emu-rom playable mode, which returns early below.
+  SetProcessDPIAware();
+#endif
+
   if (g_emu_rom_file)
     return RunEmuRom(g_emu_rom_file);
   if (g_nwa_hold_seconds && !g_config.nwa_enabled)
@@ -793,6 +907,7 @@ int main(int argc, char** argv) {
   LoadAssets();
   LoadLinkGraphics();
   Mods_LoadAll(g_config.mods_enabled ? g_config.mods_directory : NULL);
+  OptionsMenu_Init();
   // DimFlashes patches the palette while assets are loaded, before mods can
   // override the feature. Reapply only when a mod changed its effective value.
   bool ini_dim_flashes = (ini_features0 & kFeatures0_DimFlashes) != 0;
@@ -808,6 +923,11 @@ int main(int argc, char** argv) {
   }
 
   ZeldaInitialize();
+  if (g_menu_test_file != NULL) {
+    bool ok = OptionsMenu_RunHeadlessTest(g_menu_test_file);
+    RenderPlugin_Shutdown();
+    return ok ? 0 : 1;
+  }
   Coop_Start();
   SharedWorld_Start();
   NwaServer_Start(g_config.nwa_enabled, g_config.nwa_port,
@@ -831,6 +951,8 @@ int main(int argc, char** argv) {
     render_plugin_active = RenderPlugin_Load(g_config.render_plugin);
     if (!render_plugin_active)
       fprintf(stderr, "render-plugin: keeping the built-in renderer\n");
+    else
+      RenderPlugin_SetEnabled(g_config.render_plugin_enabled);
   }
   {
     bool frame_probe = g_config.frame_description || g_frame_check ||
@@ -928,14 +1050,19 @@ int main(int argc, char** argv) {
 
     NwaServer_Poll();
 
-    bool paused = g_paused || NwaServer_IsPaused();
+    bool menu_open = OptionsMenu_IsOpen();
+    bool paused = g_paused || NwaServer_IsPaused() || menu_open;
     if (paused != audiopaused) {
       audiopaused = paused;
-      if (device)
-        SDL_PauseAudioDevice(device, audiopaused);
+      if (g_audio_device)
+        SDL_PauseAudioDevice(g_audio_device, audiopaused);
     }
 
     if (paused) {
+      // Keep drawing the frozen game with the menu overlay on top. The
+      // simulation is not stepped, so opening the menu pauses the game.
+      if (menu_open && !g_paused && !NwaServer_IsPaused())
+        DrawFrozenFrameWithMenu();
       SDL_Delay(16);
       continue;
     }
@@ -977,8 +1104,10 @@ int main(int argc, char** argv) {
         }
       }
       LocalCoop_Select(0);
-      if (draw_local)
+      if (draw_local) {
+        CaptureFrameSnapshot(pixel_buffer, pitch, g_output_width, g_output_height);
         g_renderer_funcs.EndDraw();
+      }
       local_drawn = true;
     } else {
       SharedWorld_SetInput2((uint16)inputs2);
@@ -1027,6 +1156,8 @@ int main(int argc, char** argv) {
       }
     }
   }
+  if (OptionsMenu_IsOpen())
+    OptionsMenu_Close();
   if (g_config.autosave)
     HandleCommand(kKeys_Save + 0, true);
 
@@ -1036,7 +1167,7 @@ int main(int argc, char** argv) {
   NwaServer_Stop();
   RenderPlugin_Shutdown();
 
-  ShutdownDisplayAndAudio(window, device);
+  ShutdownDisplayAndAudio(window);
   //SaveConfigFile();
   return 0;
 }
@@ -1255,8 +1386,18 @@ static void HandleCommand_Locked(uint32 j, bool pressed) {
     case kKeys_VoxelLighting:
       RenderPlugin_Command(kRenderCommand_ToggleLighting);
       break;
+    case kKeys_VoxelLevelLow:
+      RenderPlugin_Command(kRenderCommand_CameraLevelLow);
+      break;
+    case kKeys_VoxelLevelMid:
+      RenderPlugin_Command(kRenderCommand_CameraLevelMid);
+      break;
+    case kKeys_VoxelLevelHigh:
+      RenderPlugin_Command(kRenderCommand_CameraLevelHigh);
+      break;
     case kKeys_VolumeUp:
     case kKeys_VolumeDown: HandleVolumeAdjustment(j == kKeys_VolumeUp ? 1 : -1); break;
+    case kKeys_OptionsMenu: OptionsMenu_Toggle(); break;
     default: assert(0);
     }
   }
@@ -1267,6 +1408,10 @@ static bool SecondPlayerControlsActive(void) {
 }
 
 static void HandleInput(int keyCode, int keyMod, bool pressed) {
+  if (OptionsMenu_IsOpen()) {
+    OptionsMenu_HandleKey(keyCode, keyMod, pressed);
+    return;
+  }
   if (SecondPlayerControlsActive()) {
     int j2 = FindCmdForSdlKey2(keyCode, keyMod);
     if (j2 >= kKeys_Controls && j2 <= kKeys_Controls_Last) {
@@ -1327,6 +1472,11 @@ static int RemapSdlButton(int button) {
 }
 
 static void HandleGamepadInputForPlayer(int button, bool pressed, int player) {
+  if (OptionsMenu_IsOpen()) {
+    if (player == 0)
+      OptionsMenu_HandleGamepadButton(button, pressed);
+    return;
+  }
   if (!!(g_gamepad_modifiers[player] & (1 << button)) == pressed)
     return;
   g_gamepad_modifiers[player] ^= 1 << button;
@@ -1821,8 +1971,8 @@ static int RunEmuRomInteractive(Snes *snes, EmuSram *sram) {
     bool paused = g_paused || NwaServer_IsPaused();
     if (paused != audiopaused) {
       audiopaused = paused;
-      if (device)
-        SDL_PauseAudioDevice(device, audiopaused);
+      if (g_audio_device)
+        SDL_PauseAudioDevice(g_audio_device, audiopaused);
     }
     if (paused) {
       SDL_Delay(16);
@@ -1865,7 +2015,7 @@ static int RunEmuRomInteractive(Snes *snes, EmuSram *sram) {
 
   if (EmuSramSaveIfChanged(sram, snes->cart->ram, false))
     fprintf(stderr, "emu: saved SRAM %s\n", sram->path);
-  ShutdownDisplayAndAudio(window, device);
+  ShutdownDisplayAndAudio(window);
   g_emu_mode = false;
   g_emu_snes = NULL;
   g_emu_dsp = NULL;
@@ -2314,6 +2464,10 @@ static int RunHeadless(const char *rom_file) {
     else if (SharedWorld_IsActive())
       SharedWorld_DumpDone();
   }
+  if (g_menu_screenshot_page != NULL) {
+    if (!OptionsMenu_OpenPageByName(g_menu_screenshot_page))
+      Die("--menu-screenshot: unknown page (use Video, Sound, Gameplay, Mods or Keys)");
+  }
   if (g_screenshot_file)
     WriteScreenshot(g_screenshot_file);
   if (g_frame_check) {
@@ -2397,6 +2551,117 @@ static void ApplyDimFlashesPalette(bool enabled) {
     kPalette_DungBgMain[0x485] = g_dim_flashes_original[1];
     kPalette_DungBgMain[0x486] = g_dim_flashes_original[2];
   }
+}
+
+// Live application of options-menu changes. They only run when the user
+// changes a value; the menu being closed leaves all of this untouched.
+void MenuHost_SetVolume(int volume) {
+  volume = IntMin(IntMax(volume, 0), 100);
+#if SYSTEM_VOLUME_MIXER_AVAILABLE
+  SetApplicationVolume(volume);
+#else
+  g_sdl_audio_mixer_volume = volume * SDL_MIX_MAXVOLUME / 100;
+#endif
+}
+
+void MenuHost_ApplyVideo(void) {
+  g_zenv.ppu->extraLeftRight =
+      UintMin(g_config.extended_aspect_ratio, kPpuExtraLeftRight);
+  g_snes_width = g_config.extended_aspect_ratio * 2 + 256;
+  g_snes_height = g_config.extend_y ? 240 : 224;
+  g_ppu_render_flags =
+      g_config.new_renderer * kPpuRenderFlags_NewRenderer |
+      g_config.enhanced_mode7 * kPpuRenderFlags_4x4Mode7 |
+      g_config.extend_y * kPpuRenderFlags_Height240 |
+      g_config.no_sprite_limits * kPpuRenderFlags_NoSpriteLimits;
+  RenderPlugin_SetEnabled(g_config.render_plugin_enabled);
+  g_current_window_scale = g_config.window_scale == 0
+                               ? 2
+                               : IntMin(g_config.window_scale, kMaxWindowScale);
+  UpdateOutputSize();
+  if (g_window == NULL)
+    return;
+
+  g_win_flags &= ~(SDL_WINDOW_FULLSCREEN | SDL_WINDOW_FULLSCREEN_DESKTOP);
+  if (g_config.fullscreen == 1) {
+    g_win_flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
+    SDL_SetWindowFullscreen(g_window, SDL_WINDOW_FULLSCREEN_DESKTOP);
+  } else if (g_config.fullscreen == 2) {
+    g_win_flags |= SDL_WINDOW_FULLSCREEN;
+    SDL_SetWindowFullscreen(g_window, SDL_WINDOW_FULLSCREEN);
+  } else {
+    SDL_SetWindowFullscreen(g_window, 0);
+    if (g_config.window_width == 0 && g_config.window_height == 0)
+      SDL_SetWindowSize(g_window, g_current_window_scale * g_output_width,
+                        g_current_window_scale * g_output_height);
+  }
+}
+
+void MenuHost_ApplyAudio(void) {
+  ZeldaEnableMsu(g_config.enable_msu);
+}
+
+bool MenuHost_SetAudioChannels(int channels) {
+  if (channels < 1 || channels > 2)
+    return false;
+  // No device (headless) or audio disabled: only the saved config changes.
+  if (!g_config.enable_audio || g_audio_device == 0) {
+    g_config.audio_channels = (uint8)channels;
+    return true;
+  }
+
+  SDL_AudioDeviceID old_device = g_audio_device;
+  SDL_PauseAudioDevice(old_device, 1);
+
+  SDL_AudioDeviceID new_device;
+  uint8 new_channels;
+  int new_frames;
+  uint8 *new_buffer;
+  if (!OpenAudioDevice(channels, &new_device, &new_channels, &new_frames,
+                       &new_buffer)) {
+    fprintf(stderr, "menu: cannot reopen audio device: %s\n", SDL_GetError());
+    if (!OptionsMenu_IsOpen())
+      SDL_PauseAudioDevice(old_device, 0);
+    return false;
+  }
+
+  SDL_LockMutex(g_audio_mutex);
+  uint8 *old_buffer = g_audiobuffer;
+  g_audio_device = new_device;
+  g_audio_channels = new_channels;
+  g_frames_per_block = new_frames;
+  g_audiobuffer = new_buffer;
+  g_audiobuffer_cur = new_buffer;
+  g_audiobuffer_end = new_buffer;
+  g_config.audio_channels = new_channels;
+  SDL_UnlockMutex(g_audio_mutex);
+
+  SDL_CloseAudioDevice(old_device);
+  free(old_buffer);
+  // The new device starts paused. The main loop resumes it when the menu
+  // closes (or leaves it paused if the game was already paused).
+  if (!OptionsMenu_IsOpen())
+    SDL_PauseAudioDevice(new_device, 0);
+  return true;
+}
+
+void MenuHost_ApplyFeatures(void) {
+  uint32 old = g_wanted_zelda_features;
+  g_wanted_zelda_features = g_config.features0;
+  if ((old ^ g_wanted_zelda_features) &
+      (kFeatures0_NewStyleInventory | kFeatures0_HorizontalMagicBar |
+       kFeatures0_ReduxHud))
+    Hud_Rebuild();
+  ApplyDimFlashesPalette((g_config.features0 & kFeatures0_DimFlashes) != 0);
+}
+
+bool MenuHost_RenderPluginActive(void) {
+  return RenderPlugin_IsActive();
+}
+
+const char *MenuHost_RenderPluginName(void) {
+  const char *name = RenderPlugin_Name();
+  return name != NULL ? name : "";
 }
 
 static void LoadAssets() {

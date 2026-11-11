@@ -20,9 +20,26 @@ enum {
   kModPermission_StateWrite = 1u << 0,
 };
 
+// One entry from the mods directory, for the in-game options menu. The
+// effective values already include the [Mods] enable/priority overrides from
+// zelda3.user.ini; manifest_* keeps what mod.json declared.
+typedef struct ModListInfo {
+  char id[64];
+  char name[96];
+  int priority;
+  bool enabled;
+  bool loaded;
+  int manifest_priority;
+  bool manifest_enabled;
+} ModListInfo;
+
 // Loads every mod below directory (normally "mods"). Failures are reported on
 // stderr and only disable the affected mod; this function never dies.
 void Mods_LoadAll(const char *directory);
+
+// Snapshot of the mods directory after Mods_LoadAll. The menu only reads it.
+int Mods_ListCount(void);
+const ModListInfo *Mods_ListGet(int index);
 
 // Resolves a path from a mod manifest relative to mod_dir. Rejects empty
 // paths, absolute paths (including drive letters and UNC paths) and any ".."

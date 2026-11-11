@@ -15,6 +15,7 @@
 #include "sprite_main.h"
 #include "mod/events.h"
 #include "mod/hooks.h"
+#include "mod/inverted.h"
 #include "mod/items.h"
 #include "mod/seed_import.h"
 #include "mod/seed_oracle.h"
@@ -1138,7 +1139,12 @@ void Link_SplashUponLanding() {  // 878f1d
       LinkState_Bunny_recache();
       return;
     }
-    link_player_handler_state = (link_item_moon_pearl) ? kPlayerState_TempBunny : kPlayerState_PermaBunny;
+    bool temp_bunny = link_item_moon_pearl;
+    if (ModInverted_Active())
+      temp_bunny = link_item_moon_pearl ||
+                   !ModInverted_PearlRequired(overworld_screen_index);
+    link_player_handler_state =
+      temp_bunny ? kPlayerState_TempBunny : kPlayerState_PermaBunny;
   } else if (link_is_in_deep_water) {
     if (link_player_handler_state != kPlayerState_RecoilOther)
       AncillaAdd_Splash(21, 0);
@@ -1917,7 +1923,7 @@ void Link_ReceiveItem(uint8 item, int chest_position) {  // 8799ad
     countdown_for_blink = 0;
     link_state_bits = 0;
   }
-  if (g_mod_event_mask & (1u << kModEv_ItemReceive)) {
+  if (g_mod_event_mask & (1ull << kModEv_ItemReceive)) {
     int item_filter = item;
     ModEvents_Emit(kModEv_ItemReceive, item_filter, chest_position, item_receipt_method, &item_filter);
     item = (uint8)item_filter;
@@ -2150,8 +2156,14 @@ void Link_HandleAPress() {  // 879baa
       action = 1;
     }
     static const uint8 kAbilityBitmasks[] = { 0xE0, 0x40, 4, 0xE0, 0xE0, 0xE0, 0xE0, 0xE0 };
-attempt_action:
-    if (!(kAbilityBitmasks[action] & link_ability_flags)) {
+attempt_action:;
+    uint8 ability_flags = link_ability_flags;
+    const ModSeedZ3rSettings *seed_settings = ModSeedImport_Z3rSettings();
+    if (ModSeedImport_Z3rRulesActive() && seed_settings != NULL &&
+        seed_settings->fake_boots &&
+        (!link_is_running || tiledetect_pit_tile == 0))
+      ability_flags |= 4;  // z3r $879C22 ModifyBoots: fake boots for dash
+    if (!(kAbilityBitmasks[action] & ability_flags)) {
       bitfield_for_a_button = 0;
       return;
     }
@@ -3001,6 +3013,13 @@ void LinkItem_Mirror() {  // 87a91a
 }
 
 void DoSwordInteractionWithTiles_Mirror() {  // 87a95c
+  // z3r MirrorBonk: the real mirror-use path checks the inverted rectangles
+  // before any world transition is started.
+  if (ModInverted_MirrorBonk(link_x_coord, link_y_coord)) {
+    link_player_handler_state = kPlayerState_RecoilWall;
+    LinkState_Recoil();
+    return;
+  }
   if (player_is_indoors) {
     if (flag_block_link_menu)
       return;
@@ -3031,6 +3050,12 @@ void LinkState_CrossingWorlds() {  // 87a9b1
 
   Link_ResetProperties_B();
   TileCheckForMirrorBonk();
+
+  if (ModInverted_MirrorBonk(link_x_coord, link_y_coord)) {
+    link_player_handler_state = kPlayerState_RecoilWall;
+    LinkState_Recoil();
+    return;
+  }
 
   if ((overworld_screen_index & 0x40) != last_light_vs_dark_world && ((t = R12 | R14) & 0xc) != 0 && BitSum4(t) >= 2)
     goto do_mirror;
@@ -3075,7 +3100,12 @@ do_mirror:
   if ((overworld_screen_index & 0x40) != last_light_vs_dark_world)
     num_memorized_tiles = 0;
 
-  link_player_handler_state = (link_item_moon_pearl || !(overworld_screen_index & 0x40)) ? kPlayerState_Ground : kPlayerState_PermaBunny;
+  bool safe_world = !(overworld_screen_index & 0x40);
+  if (ModInverted_Active())
+    safe_world = !ModInverted_PearlRequired(overworld_screen_index);
+  link_player_handler_state =
+    (link_item_moon_pearl || safe_world) ?
+    kPlayerState_Ground : kPlayerState_PermaBunny;
 }
 
 void Link_PerformDesertPrayer() {  // 87aa6c
@@ -6355,7 +6385,8 @@ void Link_Initialize() {  // 87f13c
     // If you quit in the middle of red armos knight stomp the lumberjack tree will fall on its own
     bg1_y_offset = bg1_x_offset = 0;
       //bugfix: if you die in a dungeon as a permabunny and continue, you revert back to link
-      if (!link_item_moon_pearl && savegame_is_darkworld) {
+      if (!link_item_moon_pearl &&
+          ModInverted_PearlRequired(savegame_is_darkworld)) {
         link_player_handler_state = kPlayerState_PermaBunny;
         link_is_bunny = 1;
         link_is_bunny_mirror = 1;

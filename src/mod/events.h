@@ -33,6 +33,11 @@ typedef enum ModEventType {
   kModEv_PlayerDeath,       // a = player (1 or 2)
   kModEv_PlayerRespawn,     // a = player (1 or 2), b = health after respawn
   kModEv_Player2SpriteDamage, // a = slot, b = type, c = damage applied
+  kModEv_SeedItem,          // a = item id, b = target dungeon (seed mod only)
+  kModEv_GtOpen,            // a = crystal count, b = target, c = mode
+  kModEv_SeedSetting,       // a = setting id, b = value (seed mod only)
+  kModEv_GanonCheck,        // a = blocked (1/0), b = crystal count, c = mode
+  kModEv_DialogueText,      // a = message index, b = FNV-1a of the string, c = size
   kModEv_Count
 } ModEventType;
 
@@ -61,9 +66,9 @@ void ModEvents_EnableTrace(void);
 // trace subscriber is active, so it stays zero in normal runs.
 int64 ModEvents_TraceFrame(void);
 
-extern uint32 g_mod_event_mask;  // bit (1u << type) is set when there is a listener
+extern uint64 g_mod_event_mask;  // bit (1ull << type) is set when there is a listener
 
 #define MOD_EMIT(t, a, b, c) \
-  do { if (g_mod_event_mask & (1u << (t))) ModEvents_Emit((t), (a), (b), (c), NULL); } while (0)
+  do { if (g_mod_event_mask & (1ull << (t))) ModEvents_Emit((t), (a), (b), (c), NULL); } while (0)
 
 #endif  // ZELDA3_MOD_EVENTS_H_

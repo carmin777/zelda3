@@ -38,7 +38,7 @@ caminho de desenho é o mesmo de antes da R-2.
 
 ## Estrutura
 
-`FrameDesc` (versão 3) contém:
+`FrameDesc` (versão 4) contém:
 
 - `ppu`: estado no começo do frame — modo, brilho, force blank, BGs (tilemap,
   tiles, tamanho, rolagem), telas principal/secundária, janelas, mosaico,
@@ -71,6 +71,11 @@ caminho de desenho é o mesmo de antes da R-2.
   - `attr`: atributo de colisão (mesma tabela que o jogo usa);
   - `raw`: byte bruto da masmorra ou palavra Map16 do overworld;
   - `valid`: se o tile cai na área realmente visível (respeita `extra*Cur`).
+- `semantics.room_layer[2]`: a **sala/área atual inteira** (até 64×64 tiles
+  numa masmorra de 2×2 telas, 32×32 no overworld), com `cols`/`rows`,
+  `origin_tile_x/y` (tile no canto do viewport), `base_tile_x/y` (início da
+  janela na tabela de origem), `valid`, `attr` e `raw`. É o que permite ao
+  voxel preencher o trapézio da câmera inclinada sem ler telas/salas vizinhas.
 
 ### Camada semântica
 
@@ -144,9 +149,10 @@ O host expõe `log()` e `render_frame_desc()`. O segundo é o mesmo caminho de
 um plugin de voxel/HD pode ignorá-lo e desenhar só a partir da descrição.
 
 Versões: `kRenderPluginApiVersion` (agora **3**) cobre assinaturas/layout da
-API; `kFrameDescVersion` (agora **3**) cobre a descrição. A versão 3 acrescenta
-o callback opcional `command` (câmera/sombras/iluminação) e a camada semântica
-de BG1 do overworld. A carga recusa a biblioteca, com mensagem clara e sem
+API; `kFrameDescVersion` (agora **4**) cobre a descrição. A versão 4 acrescenta
+a camada `room_layer` (a sala/área atual inteira, além do viewport SNES); a
+versão 3 trouxe o callback opcional `command` (câmera/sombras/iluminação) e a
+camada semântica de BG1 do overworld. A carga recusa a biblioteca, com mensagem clara e sem
 derrubar o jogo, quando qualquer uma não bate, quando falta o símbolo
 `zelda3_render_plugin_get` ou quando `init()` retorna false. Nesse caso o
 renderizador embutido continua sendo usado.
@@ -469,30 +475,86 @@ replica o pixel lógico e evita quatro composições completas.
 
 ## Plugin voxel (R-4/R-5)
 
-`plugins/voxel/` monta uma cena 3D a partir da `FrameDesc`. Cada célula 8×8
-visível de BG1/BG2 vira uma coluna de voxels com a cor do tile decodificado da
-VRAM/CGRAM e a altura vinda do atributo de colisão da camada semântica. Sprites
-com dono viram cartões verticais posicionados pelo `z` da descrição; BG3
-(HUD/texto) e sprites sem dono continuam em 2D por cima. Modo 7, force blank,
-mosaico e telas especiais caem no renderizador de referência.
+`plugins/voxel/` monta um **diorama** a partir da `FrameDesc`. A cena usa a
+sala/área atual **inteira**, não só o retângulo visível do SNES: em masmorras,
+a tabela de atributos da sala (até 2×2 telas, 64×64 tiles); no overworld, os
+32×32 tiles da tela atual (map16 já carregado). Telas e salas vizinhas ficam
+fora. Isso permite que a câmera inclinada encha o trapézio que enxerga sem
+revelar o que o jogo esconde.
 
-A R-5 acrescenta câmera livre (girar/inclinar/aproximar e voltar ao padrão),
-sombras dos cartões e das colunas, luz direcional, um atalho para ligar/desligar
-o voxel em jogo e perfis por hack com herança (`extends`).
+Cada tile 8×8 recebe um **modo de arte** derivado da colisão e do desenho:
 
-O desenho usa um contexto **EGL + OpenGL** fora da tela, com FBO, e lê o
-resultado de volta para o buffer de `present`. O EGL surfaceless é tentado
-primeiro, então funciona em `--headless` sem `DISPLAY`; se o contexto falhar,
-o plugin registra uma mensagem e usa `host->render_frame_desc()` sem derrubar
-o jogo. `ZELDA3_VOXEL_NO_GL=1` força esse caminho para teste.
+| Modo | Uso | Geometria |
+|---|---|---|
+| `flat` | chão, água, poços | um quad com a arte do tile; água/poço ficam abaixo do plano |
+| `top` | telhados, bordas, plataformas | a arte de cima vai para a face superior; as laterais repetem o tile em faixas de 8 px, escurecidas para a base, sem espremer o desenho inteiro na altura |
+| `upright` | paredes, árvores, cercas, placas, fachadas | a face sul reconstrói o desenho 2D em pé (regra de dobrar para cima) |
+| `stack` | copas de árvore e cerca-viva | cada pixel opaco vira uma coluna e a silhueta segue o desenho; no Mundo Claro o topo é arredondado por um campo de distância chamfer em pixel sobre a copa conectada, no Mundo das Trevas cada árvore de 8×8 células mantém a própria cúpula; faixas finas de borda ficam planas |
+| `prop` | tile de chão opaco com um objeto pequeno pintado (lápides da vila do Mundo das Trevas) | o chão fica plano e só a silhueta sobe como billboard; pedido por exceção de perfil, nunca por heurística geral |
+
+Objetos sólidos altos são agrupados por conectividade; a metade inferior vira
+fachada `upright` e a superior vira `top` (telhado/copa). A altura sobe com o
+número de linhas desenhadas, limitada para uma parede não virar arranha-céu.
+Tiles com transparência (arbustos, postes de cerca, copas recortadas) são
+extrudados **por pixel**: o buraco entre dois postes continua aberto e um
+arbusto de duas linhas não vira uma caixa. O perfil de dados pode fixar modo e
+altura por atributo, `raw` (faixa), `tile` (faixa), sala, área, andar ou
+camada.
+
+Faces verticais mais altas que 1,5 tile (12 px) **repetem o tile em faixas de
+8 px** (a última faixa é parcial) em vez de esticar o tile inteiro na altura; o
+sombreamento continua interpolado da base para o topo. Faces baixas mantêm o
+desenho inteiro num quad só.
+
+O atlas é deduplicado por conteúdo e o relevo usa o **depth buffer**; não há
+ordenação por y. Sprites com dono viram cartões inclinados para trás,
+posicionados pelo `z` do jogo, e usam a paleta de sprite correta (metade
+0x80–0xFF da CGRAM). O HUD/BG3 e os sprites sem dono continuam em 2D por cima.
+
+### Câmera
+
+A projeção é uma perspectiva real: a câmera fica ao sul do centro e olha para
+o norte, com elevação controlada. O chão vira um trapézio e a geometria fora
+do viewport SNES (já carregada na `room_layer`) preenche a imagem. O topo não
+é cortado: a cena se estende para o norte o quanto a câmera enxerga.
+
+Níveis de inclinação (off/15°/35°/50°); o padrão do perfil é 54° de
+elevação (36° de inclinação):
+
+| Tecla | Ação |
+|---|---|
+| F11 | liga/desliga o voxel (off cai no renderizador de referência) |
+| Alt+1 / Alt+2 / Alt+3 | presets 15° / 35° / 50° (transição suave) |
+| Alt+← / Alt+→ | gira a câmera (yaw, ±60°) |
+| Alt+↑ / Alt+↓ | inclina continuamente (elevação 10–89°) |
+| Alt+= / Alt+- | aproxima/afasta (zoom 0,5–2,5×) |
+| Alt+0 | volta câmera, luz e sombras ao perfil |
+| F12 | liga/desliga as sombras |
+| Shift+F11 | liga/desliga a luz direcional |
+
+As transições de inclinação, yaw e zoom são suavizadas por frame; os presets
+mudam o alvo, não a pose de uma vez.
+
+### Luz, sombras e tilt-shift
+
+- A luz é direcional e calculada por face no CPU (`ambient + diffuse * N·L`).
+  Com a luz desligada, vale o `side_shade` do perfil.
+- As sombras são um **shadow map** de verdade: o terreno e os cartões são
+  renderizados de novo a partir do sol num FBO de profundidade 1024²; o
+  shader principal faz PCF 3×3 e escurece só o que está na sombra. F12 desliga
+  o passe inteiro. `ZELDA3_VOXEL_SHADOWS=0` faz o mesmo por ambiente.
+- O tilt-shift é opcional (`render.tilt_shift` ou
+  `ZELDA3_VOXEL_TILT_SHIFT`, 0–1). O mundo é renderizado num FBO separado e
+  composto com blur nas bordas; o HUD é desenhado depois, nítido.
+- `ZELDA3_VOXEL_SCALE=2|4` aumenta a resolução interna do plugin.
 
 ### Arquivos
 
 | Arquivo | Papel |
 |---|---|
-| `plugins/voxel/voxel.c` | ciclo de vida, montagem da cena, atlas de tiles, sombras, controles e fallback |
-| `plugins/voxel/voxel_gl.c` | EGL/OpenGL, shaders (3D/2D/sombra), FBO, VBO e readback |
-| `plugins/voxel/voxel_profile.c` | leitura do perfil JSON, herança e tabela de alturas |
+| `plugins/voxel/voxel.c` | ciclo de vida, classificação por célula, malha, câmera, controles e fallback |
+| `plugins/voxel/voxel_gl.c` | EGL/OpenGL, shaders (3D, sombra, tilt-shift, 2D), FBOs, VBO e readback |
+| `plugins/voxel/voxel_profile.c` | leitura do perfil JSON, herança, modos de arte e tabela de alturas |
 | `plugins/voxel/default-profile.json` | perfil padrão (dados, não código) |
 | `plugins/voxel/profiles/flat.json` | perfil "plano" de exemplo |
 | `plugins/voxel/profiles/exaggerated.json` | perfil "exagerado" de exemplo |
@@ -518,86 +580,41 @@ Três atributos mudam de significado em ambientes fechados: `0x04` (grama
 alta vira parede), `0x0b` (água funda vira parede) e `0x6c`–`0x6f` (chão vira
 parede). O perfil padrão tem essas exceções com `"indoors": true`.
 
+O perfil padrão também traz ajustes medidos no desenho para as casas de
+Kakariko (faixas de `raw` do telhado como `top` e da fachada como `upright`) e
+para a copa/árvore grande; um hack pode sobrescrever ou acrescentar exceções.
+
 Em masmorras, BG1 é o andar de cima e BG2 o de baixo. A camada do andar atual
 fica em `z = 0`; a outra sobe/desce `floor_step` (0,5 bloco por padrão). No
-overworld BG2 é o terreno e BG1 é o overlay (árvores, pontes, chuva); as duas
-camadas agora têm atributos próprios na `FrameDesc` e alturas independentes. A
-captura usa a rolagem de cada faixa de 8 linhas, então HDMA de rolagem não
-desloca mais o relevo em relação ao tile.
-
-### Sprites, HUD e câmera
-
-- Sprites com `owner_kind` Link/sprite/ancilla viram cartões no plano XZ. O
-  `y` do OAM já inclui o `-z` do jogo; o plugin reconstrói a posição do chão e
-  sobe o cartão por `z`, então o Link pula de verdade. O tamanho vertical do
-  cartão é compensado pela inclinação da câmera para continuar com 8/16 px.
-- Sprites sem dono (HUD, efeitos de tela) ficam em 2D na posição do OAM.
-- BG3 é desenhado como quads 2D por cima da cena, com a paleta 2bpp correta.
-  O split de BG3 da linha 128 (IRQ) é reproduzido por linha; as escritas de
-  scroll de BG1/BG2 também são aplicadas por linha na busca do tilemap e na
-  camada semântica.
-- A câmera é uma projeção perspectiva inclinada, sem revelar tiles fora da
-  área da `FrameDesc`: a geometria é limitada à largura/altura descritas e o
-  recorte continua sendo o do painel. O fundo fora do diorama é a cor de
-  backdrop (`cgram[0]`). Com `yaw`, a cena gira em torno do centro do painel;
-  o zoom só aproxima/afasta, nunca busca tiles que não estão na descrição.
-- Câmera livre em jogo (volta ao padrão com Alt+0):
-
-| Tecla | Ação |
-|---|---|
-| F11 | liga/desliga o voxel (cai no renderizador de referência) |
-| Alt+← / Alt+→ | gira a câmera (yaw, ±60°) |
-| Alt+↑ / Alt+↓ | inclina (elevação, 10–89°) |
-| Alt+= / Alt+- | aproxima/afasta (zoom 0,5–2,5×) |
-| Alt+0 | volta câmera, luz e sombras ao perfil |
-| F12 | liga/desliga as sombras |
-| Shift+F11 | liga/desliga a luz direcional |
-
-- Variáveis de ambiente (o perfil tem os mesmos campos): `..._CAMERA_ANGLE`
-  (58°), `..._CAMERA_DISTANCE` (1,0; maior = menos perspectiva),
-  `..._CAMERA_HEIGHT` (1,0), `..._CAMERA_FOLLOW` (1; segue o chão do Link, não
-  o pulo), `..._CAMERA_YAW` (0°), `..._CAMERA_ZOOM` (1,0),
-  `..._HEIGHT_SCALE` (1,0), `..._SIDE_SHADE`, `..._SPRITE_SCALE`,
-  `..._LIGHTING`, `..._SHADOWS`, `..._SHADOW_STRENGTH`, `..._SHADOW_LENGTH`
-  e `..._SCALE` (1, 2 ou 4).
-
-### Luz e sombras
-
-- A luz é direcional e calculada por face no CPU (`ambient + diffuse * N·L`).
-  Topo e as quatro laterais recebem tons diferentes; com a luz desligada o
-  resultado volta ao sombreado plano por `side_shade`.
-- As sombras são quads escuros no chão, desenhados depois das colunas e antes
-  dos cartões, com blend alfa e teste de profundidade. Colunas altas projetam
-  uma sombra deslocada na direção oposta à luz; cada sprite com dono projeta
-  uma sombra de contato. O perfil controla `strength`, `length`, `columns` e
-  `sprites`, e F12 desliga tudo.
-- O pass de sombra usa um programa GLSL próprio (mesma projeção 3D, fragmento
-  de alfa constante), então não altera as cores dos tiles.
+overworld BG2 é o terreno e BG1 é o overlay (árvores, pontes, chuva). A
+captura usa a rolagem de cada faixa de 8 linhas, então HDMA não desloca o
+relevo em relação ao tile.
 
 ### Perfil
 
 `ZELDA3_VOXEL_PROFILE` aponta para um JSON. Sem a variável, o plugin tenta
 `plugins/voxel/default-profile.json`; sem o arquivo, usa a tabela embutida. Um
 perfil pode usar `"extends": "caminho.json"` para herdar outro perfil e
-sobrescrever só o que muda — é assim que um hack traz o seu ajuste sem copiar
-a tabela inteira. O caminho é resolvido relativo ao arquivo do perfil e, se
-não existir, como escrito (relativo ao diretório de lançamento). O formato:
+sobrescrever só o que muda. O caminho é resolvido relativo ao arquivo do
+perfil e, se não existir, como escrito (relativo ao diretório de lançamento).
+O formato:
 
 ```json
 {
   "format": "zelda3-voxel-profile",
   "version": 1,
-  "camera": { "angle": 58, "distance": 1.0, "height": 1.0, "follow_link": true,
-              "yaw": 0.0, "zoom": 1.0 },
+  "camera": { "angle": 40, "distance": 1.0, "height": 1.0,
+              "follow_link": true, "yaw": 0.0, "zoom": 1.15 },
   "render": { "side_shade": 0.72, "sprite_scale": 1.0, "floor_step": 0.5,
-              "skirt": 1.0, "height_scale": 1.0 },
+              "skirt": 1.0, "height_scale": 1.0, "tilt_shift": 0.0 },
   "lighting": { "enabled": true, "azimuth": 45, "elevation": 55,
                 "ambient": 0.55, "diffuse": 0.45 },
-  "shadows": { "enabled": true, "strength": 0.32, "length": 1.5,
+  "shadows": { "enabled": true, "strength": 0.42, "length": 1.5,
                "columns": true, "sprites": true },
   "heights": { "0": 0.0, "1": 1.5, "0x20": -1.0 },
   "exceptions": [
-    { "indoors": true, "attr": 4, "height": 1.5 },
+    { "indoors": true, "attr": 4, "height": 1.5, "mode": "upright" },
+    { "raw_min": 1023, "raw_max": 1027, "height": 2.5, "mode": "top" },
     { "room": 86, "layer": "bg2", "tile": 512, "height": 2.0 }
   ]
 }
@@ -606,9 +623,12 @@ não existir, como escrito (relativo ao diretório de lançamento). O formato:
 `heights` sobrescreve a tabela por atributo (chave decimal ou hexadecimal).
 `exceptions` são avaliadas na ordem e valem para o primeiro caso que casar:
 `indoors`, `room`, `area`, `floor`, `layer` (`0`/`1` ou `"bg1"`/`"bg2"`),
-`attr`, `raw` (byte da masmorra/Map16) e `tile` (número do tile 0–1023).
-`height` é obrigatório. `camera`, `render`, `lighting` e `shadows` são
-opcionais; variáveis de ambiente vencem o arquivo.
+`attr`, `raw`, `raw_min`/`raw_max`, `tile`, `tile_min`/`tile_max`.
+`height` é obrigatório; `mode` é `flat`, `top`, `upright` ou omitido (auto).
+`camera`, `render`, `lighting` e `shadows` são opcionais; variáveis de
+ambiente vencem o arquivo. Em `shadows`, `columns`, `sprites` e `length` ainda
+são aceitos por compatibilidade, mas o shadow map cobre os dois tipos de
+caster e a direção vem da luz.
 
 Perfis de exemplo: `profiles/flat.json` (quase plano, câmera alta, sem sombra)
 e `profiles/exaggerated.json` (alturas 1,8×, câmera baixa e sombra longa).
@@ -634,8 +654,8 @@ ZELDA3_VOXEL_PROFILE=plugins/voxel/profiles/flat.json \
 ZELDA3_VOXEL_PROFILE=plugins/voxel/profiles/exaggerated.json \
   ./zelda3 --render-plugin plugins/voxel/voxel.so zelda3.sfc
 
-# câmera girada e sombras desligadas, só para a prova
-ZELDA3_VOXEL_CAMERA_YAW=30 ZELDA3_VOXEL_SHADOWS=0 \
+# câmera de 35°, tilt-shift e sombras ligadas
+ZELDA3_VOXEL_CAMERA_ANGLE=55 ZELDA3_VOXEL_TILT_SHIFT=0.6 \
   ./zelda3 --config tests/regress.ini --headless --no-mods \
   --render-plugin plugins/voxel/voxel.so --replay-ref 6 --frames 300 \
   --screenshot .agents/shots/camera-rotated.ppm zelda3.sfc
@@ -651,37 +671,25 @@ ZELDA3_VOXEL_NO_GL=1 ./zelda3 --config tests/regress.ini --headless \
 
 - `make -j2`, `make -j2 NO_LUA=1` e os três plugins (`ppu-ref`, `hd-tiles`,
   `voxel`): sem warnings.
-- `tools/regress.sh`: 19 replays + 20 feature replays, todas as linhas `ok`
-  e `regress: all 19 replays and 20 feature replays passed`.
-- `ppu-ref`, spot de 500 frames de `ref3` com `--frame-check`: 28.672.000
-  pixels, **0 diferenças**.
+- `tools/regress.sh`: todas as linhas `ok` e a linha final.
+- `ppu-ref`, spot de 500 frames de `ref3` com `--frame-check`: 0 diferenças
+  (o plugin de arquivo precisa ser recompilado para a versão 4 da descrição).
 - Fallback com `ZELDA3_VOXEL_NO_GL=1` em `ref8`/2000: screenshot byte a byte
   igual ao render normal (mesmo MD5).
-- Screenshots em `.agents/shots/` (fora do git): `overworld-side.png`
-  (`ref6`, frame 300), `dungeon-side.png` (`ref8`, frame 2000),
-  `split-voxel.png` (`camera-split`, frame 300, os dois painéis),
-  `camera-rotated.png` (`ref6`, yaw 30°, zoom 1,15),
-  `shadows-on.png`/`shadows-off.png` (`ref6`, frame 300),
-  `profile-flat.png`/`profile-exaggerated.png` (`ref6`, frame 300),
-  `hdma-before.png`/`hdma-after.png` (`f4e-mirror`, frame 260; o build da R-4
-  ainda usava a rolagem inicial) e
-  `jump-sequence.png`/`jump.gif` (`ref2`, frames 430–485).
-
-Custo medido nesta máquina com `--replay-ref 4 --frames 3000` (inclui a
-simulação; três execuções intercaladas):
-
-| Modo | Tempo total | Por frame | Custo do plugin |
-|---|---:|---:|---:|
-| `--frame-desc` (captura, sem plugin) | 11,34–12,53 s | 3,78–4,18 ms | — |
-| `--frame-plugin-draw`, luz + sombras | 21,17–22,56 s | 7,06–7,52 ms | ~3,2–3,6 ms |
-| `--frame-plugin-draw`, `ZELDA3_VOXEL_SHADOWS=0` | 20,72–24,07 s | 6,91–8,02 ms | ~3,0–4,1 ms |
-
-O custo é o de um protótipo: o atlas de 512×768 é remontado e enviado por
-frame, a geometria é gerada na CPU e o frame é lido de volta com
-`glReadPixels`. Não há cache de atlas entre frames nem instancing. A máquina
-varia alguns ms/frame entre execuções; o custo das sombras ficou dentro dessa
-variação (a geometria extra é pequena perto do atlas/readback), e o custo
-dominante continua sendo o atlas/readback.
+- Screenshots em `.agents/shots/` (fora do git): `v6-house-side.png` (casa com
+  o soldado, mesmo recorte da queixa), `v6-castle-side.png`,
+  `v6-dungeon-side.png`, `v6-kakariko-side.png`, `v6-walk-side.png`,
+  `v6-walk.gif` (sequência andando) e `v6-sprite-palette-side.png` (Link verde
+  e soldado azul, normais × voxel).
+- Custo medido nesta máquina com `--replay-ref 4 --frames 3000` (inclui a
+  simulação; três execuções): o caminho com `--render-plugin` levou
+  **1,5–2,4 s** (0,5–0,8 ms/frame); o caminho de captura com o renderizador de
+  software (`--frame-desc`) levou **12,2–13,5 s** (4,1–4,5 ms/frame). O plugin
+  substitui o desenho por software por um passe GL único; a geometria da sala
+  inteira, o atlas 1024² e o shadow map 1024² caberam no orçamento. Desligar
+  sombras (`ZELDA3_VOXEL_SHADOWS=0`, 1,28 s) e ligar tilt-shift
+  (`ZELDA3_VOXEL_TILT_SHIFT=0.6`, 1,27 s) ficou dentro da variação entre
+  execuções. O tilt-shift padrão é 0 (sem o passe extra).
 
 ## Limitações conhecidas
 
@@ -713,22 +721,35 @@ dominante continua sendo o atlas/readback.
 - Janelas, matemática de cor, brilho por linha e mosaico não são refeitos na
   cena 3D; o plugin aplica só o brilho global da CGRAM. Por isso mosaico cai
   no fallback.
-- Sprites são cartões planos (sem voxels de 1 de espessura). Eles recebem a luz
-  direcional e uma sombra de contato, mas não têm sombreamento por pixel.
-- As sombras são quads de tela alinhados à grade de tiles, não um volume
-  projetado: funcionam como sombra "barata" e podem encostar em paredes
-  vizinhas. A câmera livre limita yaw a ±60° e zoom a 0,5–2,5× justamente
-  para o diorama continuar legível.
-- O fundo fora do diorama é a cor de backdrop; em salas menores que a tela a
-  câmera inclinada mostra essa borda, mas nunca tiles fora da `FrameDesc`.
+- Sprites são cartões planos inclinados para trás (sem voxels de 1 de
+  espessura). Eles usam a paleta correta e o mesmo recorte do OAM, mas não têm
+  sombreamento por pixel.
+- A sala/área atual é a janela máxima que a `FrameDesc` carrega: 32×32 tiles
+  no overworld e até 64×64 numa masmorra de 2×2 telas. Com yaw muito grande as
+  bordas dessa janela podem aparecer; o fundo é sempre a cor de backdrop, nunca
+  uma tela/sala vizinha.
+- O shadow map cobre a área enquadrada pela câmera, não o mundo inteiro; uma
+  sombra muito longe do centro pode sair do mapa. O tilt-shift é opcional e
+  custa um passe de tela cheia.
+- O perfil é lido uma vez no `init`; não há recarga em quente.
 - O perfil é lido uma vez no `init`; não há recarga em quente.
 - EGL/OpenGL só é compilado no Linux. Em Windows/macOS o plugin compila e cai
   no renderizador de referência.
 
 ## Próximas etapas
 
-A R-5 fechou câmera livre, sombras/luz e perfis por hack. Continuam fora do
-protótipo: cache de atlas/instancing, mapeamento modo 7 → atributo, suporte a
-janelas/matemática de cor na cena 3D e sombras projetadas de verdade. O plugin
-HD (R-3) e o voxel (R-4/R-5) compartilham o mesmo caminho de fallback
+A V6 refez o voxel como diorama: modos de arte por tile, geometria da sala
+inteira, câmera em níveis, shadow map e tilt-shift opcional. A regra de arte é
+que o topo de qualquer célula mostra sempre o pixel do frame 2D; só as faces
+laterais podem ser sombreadas. A sétima leva (r34) passou a repetir o tile em
+faixas de 8 px nas faces verticais, arredondou as copas do Mundo Claro com um
+campo de distância (sem costura a cada 8 células) e baixou os barrancos da Lost
+Woods e do Eastern Palace para uma camada; a faixa escura da fachada da cabana
+da Lost Woods, que caía num atributo rebaixado, passou a ficar em pé na fachada
+em vez de manchar o telhado. A oitava leva (r35) arredondou as copas do Mundo
+Claro com distância chamfer em pixel e aplicou um chanfro de 2 px às bordas de
+landforms elevados nas áreas 0 e 41. Continuam fora do protótipo: cache de atlas/instancing entre frames,
+mapeamento modo 7 → atributo, suporte a janelas/matemática de cor na cena 3D e
+animação de tiles.
+O plugin HD (R-3) e o voxel (R-4/R-5) compartilham o mesmo caminho de fallback
 (`host->render_frame_desc()`) e a mesma leitura de VRAM/CGRAM/camada semântica.

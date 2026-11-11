@@ -5,8 +5,10 @@
 
 typedef struct ModShop {
   bool used;
+  bool any_door;
   void *owner;
   uint8 room;
+  uint8 door;
   uint8 count;
   ModShopEntry entries[kModShopMaxSlots];
 } ModShop;
@@ -24,10 +26,15 @@ static void SetError(char *err, size_t err_size, const char *message) {
     snprintf(err, err_size, "%s", message);
 }
 
-bool ModShop_Set(void *owner, int room, const ModShopEntry *entries, int count,
-                 char *err, size_t err_size) {
+bool ModShop_SetForDoor(void *owner, int room, int door, bool any_door,
+                        const ModShopEntry *entries, int count,
+                        char *err, size_t err_size) {
   if (room < 0 || room > 0xff) {
     SetError(err, err_size, "shop room must be between 0x00 and 0xFF");
+    return false;
+  }
+  if (door < 0 || door > 0xff) {
+    SetError(err, err_size, "shop door must be between 0x00 and 0xFF");
     return false;
   }
   if (count < 1 || count > kModShopMaxSlots) {
@@ -37,7 +44,9 @@ bool ModShop_Set(void *owner, int room, const ModShopEntry *entries, int count,
 
   ModShop *slot = NULL;
   for (int i = 0; i < kModShopMaxRooms; i++) {
-    if (g_shops[i].used && g_shops[i].room == (uint8)room) {
+    if (g_shops[i].used && g_shops[i].room == (uint8)room &&
+        g_shops[i].door == (uint8)door &&
+        g_shops[i].any_door == any_door) {
       slot = &g_shops[i];
       break;
     }
@@ -57,11 +66,18 @@ bool ModShop_Set(void *owner, int room, const ModShopEntry *entries, int count,
 
   memset(slot, 0, sizeof(*slot));
   slot->used = true;
+  slot->any_door = any_door;
   slot->owner = owner;
   slot->room = (uint8)room;
+  slot->door = (uint8)door;
   slot->count = (uint8)count;
   memcpy(slot->entries, entries, (size_t)count * sizeof(*entries));
   return true;
+}
+
+bool ModShop_Set(void *owner, int room, const ModShopEntry *entries, int count,
+                 char *err, size_t err_size) {
+  return ModShop_SetForDoor(owner, room, 0, true, entries, count, err, err_size);
 }
 
 void ModShop_UnregisterOwner(void *owner) {
@@ -71,14 +87,32 @@ void ModShop_UnregisterOwner(void *owner) {
   }
 }
 
-const ModShopEntry *ModShop_FindForRoom(int room, int *count) {
+const ModShopEntry *ModShop_FindForRoom(int room, int door, int *count) {
   uint8 room_byte = (uint8)room;
+  uint8 door_byte = (uint8)door;
+  const ModShop *first = NULL;
+  const ModShop *any_door = NULL;
   for (int i = 0; i < kModShopMaxRooms; i++) {
-    if (g_shops[i].used && g_shops[i].room == room_byte) {
+    if (!g_shops[i].used || g_shops[i].room != room_byte)
+      continue;
+    if (g_shops[i].any_door) {
+      if (any_door == NULL)
+        any_door = &g_shops[i];
+      continue;
+    }
+    if (first == NULL)
+      first = &g_shops[i];
+    if (door_byte != 0 && g_shops[i].door == door_byte) {
       if (count != NULL)
         *count = g_shops[i].count;
       return g_shops[i].entries;
     }
+  }
+  const ModShop *fallback = first != NULL ? first : any_door;
+  if (fallback != NULL) {
+    if (count != NULL)
+      *count = fallback->count;
+    return fallback->entries;
   }
   return NULL;
 }

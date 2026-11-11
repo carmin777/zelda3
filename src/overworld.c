@@ -15,6 +15,8 @@
 #include "assets.h"
 #include "mod/events.h"
 #include "mod/hooks.h"
+#include "mod/inverted.h"
+#include "mod/seed_import.h"
 
 const uint16 kOverworld_OffsetBaseX[192] = {
   0,     0, 0x400, 0x600, 0x600, 0xa00, 0xa00, 0xe00,
@@ -500,9 +502,16 @@ dark:
   }
   if (savegame_is_darkworld) {
     xt = sc == 0x40 || sc == 0x43 || sc == 0x45 || sc == 0x47 ? 13 : 9;
-    if (!link_item_moon_pearl)
+    if (!link_item_moon_pearl &&
+        ModInverted_PearlRequired(savegame_is_darkworld))
       xt = 4;
   }
+  // In inverted mode the bunny theme belongs to the Light World. The normal
+  // dark-world branch above covers the other case; without a mod the helper
+  // returns the vanilla result and this is a no-op.
+  if (!link_item_moon_pearl &&
+      ModInverted_PearlRequired(savegame_is_darkworld))
+    xt = 4;
 setsong:
   queued_music_control = xt;
   DecompressAnimatedOverworldTiles(ow_anim_tiles);
@@ -539,7 +548,8 @@ setsong:
   link_speed_setting = 0;
   draw_water_ripples_or_grass = 0;
   Dungeon_ResetTorchBackgroundAndPlayerInner();
-  if (!link_item_moon_pearl && savegame_is_darkworld) {
+  if (!link_item_moon_pearl &&
+      ModInverted_PearlRequired(savegame_is_darkworld)) {
     link_is_bunny = link_is_bunny_mirror = 1;
     link_player_handler_state = kPlayerState_PermaBunny;
     LoadGearPalettes_bunny();
@@ -901,12 +911,18 @@ after:
     music_control = 0xf1;  // seed ROM NOPs the progress check
   MOD_EMIT(kModEv_OverworldTransition, new_area, dir, 0);
   MOD_EMIT(kModEv_AreaEnter, new_area, old_screen, 0);
-  if (!EmuSeedRomActive() && (!savegame_is_darkworld || link_item_moon_pearl)) {
+  if (!EmuSeedRomActive() &&
+      (!ModInverted_PearlRequired(savegame_is_darkworld) ||
+       link_item_moon_pearl)) {
     uint8 music = overworld_music[new_area];
     if ((music & 0xf0) == 0)
       sound_effect_ambient = 5;
     if (!ZeldaIsPlayingMusicTrack(music & 0xf))
       music_control = 0xf1;
+  } else if (ModInverted_Active() && !link_item_moon_pearl &&
+             ModInverted_PearlRequired(savegame_is_darkworld)) {
+    music_control = 4;
+    sound_effect_ambient = 0;
   }
   Overworld_LoadGFXAndScreenSize();
   submodule_index = 1;
@@ -1407,7 +1423,8 @@ void MirrorWarp_FinalizeAndLoadDestination() {  // 82b260
   uint8 m = overworld_music[BYTE(overworld_screen_index)];
   music_control = m & 0xf;
   sound_effect_ambient = m >> 4;
-  if (BYTE(overworld_screen_index) >= 0x40 && !link_item_moon_pearl)
+  if (!link_item_moon_pearl &&
+      ModInverted_PearlRequired(overworld_screen_index))
     music_control = 4;
 
   saved_module_for_menu = submodule_index;
@@ -1445,6 +1462,7 @@ void MirrorWarp_LoadSpritesAndColors() {  // 82b334
     map16_load_dst_off = (0x390 - 0x10 & 0x3e) >> 1;
   }
   Map16ToMap8((const uint8*)dung_bg2, 0);
+  ModInverted_ApplyOverworldPatches(overworld_screen_index);
   map16_load_var2 = bak3;
   map16_load_dst_off = bak2;
   map16_load_src_off = bak1;
@@ -1905,7 +1923,8 @@ void LoadOverworldFromDungeon() {  // 82e4a3
     WORD(link_direction_facing) = 2;
     ow_entrance_value = kExitData_NormalDoor[k];
     big_rock_starting_address = kExitData_FancyDoor[k];
-    overworld_area_index = overworld_screen_index = kExitData_ScreenIndex[k];
+    overworld_area_index = overworld_screen_index =
+      ModInverted_ExitScreen(dungeon_room_index, kExitData_ScreenIndex[k]);
     overworld_unk1 = kExitData_Unk1[k];
     overworld_unk3 = kExitData_Unk3[k];
     overworld_unk1_neg = -overworld_unk1;
@@ -2151,6 +2170,9 @@ void Overworld_LoadAmbientOverlay(bool load_map_data) {  // 82ed25
     Overworld_DrawQuadrantsAndOverlays();
 
   Map16ToMap8((const uint8*)dung_bg2, 0);
+  // z3r Overworld_LoadNewTiles ($82:ED51): the seed ROM carries the final
+  // writes for the inverted overworld screens.
+  ModInverted_ApplyOverworldPatches(overworld_screen_index);
   map16_load_var2 = bak3;
   map16_load_dst_off = bak2;
   map16_load_src_off = bak1;
@@ -2201,10 +2223,13 @@ void Overworld_DrawQuadrantsAndOverlays() {  // 82eec5
 }
 
 void Overworld_HandleOverlaysAndBombDoors() {  // 82ef29
-  if (overworld_screen_index == 0x33)
-    dung_bg2[340] = 0x20f;
-  else if (overworld_screen_index == 0x2f)
-    dung_bg2[1497] = 0x20f;
+  // z3r HardcodedRocks: the two Light World rocks are omitted in inverted.
+  if (!ModInverted_Active()) {
+    if (overworld_screen_index == 0x33)
+      dung_bg2[340] = 0x20f;
+    else if (overworld_screen_index == 0x2f)
+      dung_bg2[1497] = 0x20f;
+  }
   if (BYTE(overworld_screen_index) < 0x80 && save_ow_event_info[BYTE(overworld_screen_index)] & 0x20)
     Overworld_LoadEventOverlay();
   if (save_ow_event_info[BYTE(overworld_screen_index)] & 2) {
@@ -2869,7 +2894,9 @@ void HandlePegPuzzles(uint16 pos) {  // 8edd67
   static const uint16 kLwTurtleRockPegPositions[3] = { 0x826, 0x5a0, 0x81a };
 
   if (overworld_screen_index == 7) {
-    if (save_ow_event_info[7] & 0x20)
+    // z3r TurtleRockPegSolved: inverted mode always reports the puzzle as
+    // already solved (the hook returns $20 to the caller).
+    if (ModInverted_Active() || (save_ow_event_info[7] & 0x20))
       return;
     if (word_7E04C8 != 0xffff && kLwTurtleRockPegPositions[word_7E04C8 >> 1] == pos) {
       WORD(sound_effect_1) = 0x2d00;
@@ -3266,6 +3293,10 @@ loc_8EF7B4:
     dst[XY(32, 28)] = 0xe20;
     break;
   case 90: case 91: case 92: case 99: case 100:
+    // z3r Draw_PyramidOverlay: inverted mode does not draw the pyramid
+    // overlay at the Light World position.
+    if (ModInverted_Active())
+      break;
     dst[XY(30, 7)] = 0xe3f;
     dst[XY(31, 7)] = 0xe40;
     dst[XY(32, 7)] = 0xe41;
@@ -3334,6 +3365,12 @@ void Overworld_GetPitDestination() {  // 9bb860
     if (kFallHole_Pos[i] == pos && kFallHole_Area[i] == overworld_area_index)
       break;
     if (--i < 0) {
+      uint8 extra_entrance;
+      if (ModSeedImport_ExtraHole(pos, overworld_area_index, &extra_entrance)) {
+        which_entrance = extra_entrance;
+        byte_7E010F = 0;
+        return;
+      }
       savegame_is_darkworld = 0;
       // Chris Houlihan's room
       which_entrance = 130;
@@ -3377,10 +3414,26 @@ do_draw:
 is_149_or_169:
       door_open_closed_counter = 0;
       if (a & 0x20) {
-        // 0x169
-        if ((sram_progress_indicator & 0xf) >= 3)
+        // 0x169 - Agahnim's Tower door. A seed can replace the vanilla
+        // progress check with its AgahnimDoorStyle rule.
+        if (ModSeedImport_Active()) {
+          if (ModSeedImport_AgahnimDoorLocked()) {
+            door_open_closed_counter = 24;
+          } else {
+            // z3r FlagAgahnimDoor: entering the tower door in inverted mode
+            // activates the Ganon's Tower overlay bit and the door scratch
+            // value used by the following entrance code.
+            if (ModInverted_Active()) {
+              save_ow_event_info[0x43] |= 0x20;
+              scratch_b = 0x28;
+            }
+            goto after;
+          }
+        } else if ((sram_progress_indicator & 0xf) >= 3) {
           goto after;
-        door_open_closed_counter = 24;
+        } else {
+          door_open_closed_counter = 24;
+        }
       }
       big_rock_starting_address = pos - 0x80;
       sound_effect_2 = 21;
@@ -3407,6 +3460,8 @@ after:
       Main_ShowTextMessage();
     }
   } else {
+    if (ModSeedImport_Active())
+      previous_overworld_door = (uint8)(lx + 1);
     which_entrance = kOverworld_Entrance_Id[lx];
     link_auxiliary_state = 0;
     link_incapacitated_timer = 0;
@@ -3668,15 +3723,27 @@ void OpenGargoylesDomain() {  // 9bc264
 }
 
 void CreatePyramidHole() {  // 9bc2a7
-  Overworld_DrawMap16_Persist(0x3bc, 0xe3f);
-  Overworld_DrawMap16_Persist(0x3be, 0xe40);
-  Overworld_DrawMap16_Persist(0x3c0, 0xe41);
-  Overworld_DrawMap16_Persist(0x43c, 0xe42);
-  Overworld_DrawMap16_Persist(0x43e, 0xe43);
-  Overworld_DrawMap16_Persist(0x440, 0xe44);
-  Overworld_DrawMap16_Persist(0x4bc, 0xe45);
-  Overworld_DrawMap16_Persist(0x4be, 0xe46);
-  Overworld_DrawMap16_Persist(0x4c0, 0xe47);
+  if (ModInverted_Active()) {
+    // z3r Overworld_CreatePyramidHoleModified ($A4:9C00): the inverted hole
+    // is drawn at a different set of map16 positions.
+    Overworld_DrawMap16_Persist(0x440, 0xe39);
+    for (int i = 0; i < 4; i++)
+      Overworld_AlterTileHardcore(0x4bc, 0xe3a);
+    for (int i = 0; i < 4; i++)
+      Overworld_AlterTileHardcore(0x53c, 0xe3a);
+    for (int i = 0; i < 2; i++)
+      Overworld_AlterTileHardcore(0x5be, 0x490);
+  } else {
+    Overworld_DrawMap16_Persist(0x3bc, 0xe3f);
+    Overworld_DrawMap16_Persist(0x3be, 0xe40);
+    Overworld_DrawMap16_Persist(0x3c0, 0xe41);
+    Overworld_DrawMap16_Persist(0x43c, 0xe42);
+    Overworld_DrawMap16_Persist(0x43e, 0xe43);
+    Overworld_DrawMap16_Persist(0x440, 0xe44);
+    Overworld_DrawMap16_Persist(0x4bc, 0xe45);
+    Overworld_DrawMap16_Persist(0x4be, 0xe46);
+    Overworld_DrawMap16_Persist(0x4c0, 0xe47);
+  }
   WORD(sound_effect_ambient) = 0x3515;
   save_ow_event_info[0x5b] |= 0x20;
   sound_effect_2 = 3;

@@ -15,16 +15,16 @@ typedef struct ModEventSubscriber {
 static ModEventSubscriber g_subscribers[kMaxModEventSubscribers];
 static int g_next_subscriber_id = 1;
 
-uint32 g_mod_event_mask;
+uint64 g_mod_event_mask;
 
 static void UpdateEventMask(ModEventType type) {
   for (int i = 0; i < kMaxModEventSubscribers; i++) {
     if (g_subscribers[i].handler && g_subscribers[i].type == type) {
-      g_mod_event_mask |= 1u << type;
+      g_mod_event_mask |= 1ull << type;
       return;
     }
   }
-  g_mod_event_mask &= ~(1u << type);
+  g_mod_event_mask &= ~(1ull << type);
 }
 
 int ModEvents_Subscribe(ModEventType type, ModEventHandler *h, void *user) {
@@ -39,7 +39,7 @@ int ModEvents_Subscribe(ModEventType type, ModEventHandler *h, void *user) {
       g_subscribers[i].user = user;
       g_subscribers[i].type = type;
       g_subscribers[i].id = id;
-      g_mod_event_mask |= 1u << type;
+      g_mod_event_mask |= 1ull << type;
       return id;
     }
   }
@@ -111,6 +111,11 @@ static const char *const kModEventNames[kModEv_Count] = {
   "PlayerDeath",
   "PlayerRespawn",
   "Player2SpriteDamage",
+  "SeedItem",
+  "GtOpen",
+  "SeedSetting",
+  "GanonCheck",
+  "DialogueText",
 };
 
 const char *ModEvent_Name(ModEventType type) {

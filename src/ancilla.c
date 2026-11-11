@@ -11,8 +11,10 @@
 #include "dungeon.h"
 #include "sprite_main.h"
 #include "assets.h"
+#include "mod/events.h"
 #include "mod/game_over_text.h"
 #include "mod/hooks.h"
+#include "mod/inverted.h"
 #include "mod/items.h"
 #include "mod/seed_import.h"
 #include "mod/frame_desc.h"
@@ -3392,7 +3394,13 @@ void Ancilla22_ItemReceipt(int k) {  // 88c38a
   if (a == 0)
     goto label_a;
   if (a == 1) {
-    if (ancilla_item_to_link[k] != 0x37 && ancilla_item_to_link[k] != 0x38 && ancilla_item_to_link[k] != 0x39 || zelda_read_apui00() == 0)
+    const ModSeedZ3rSettings *seed_settings = ModSeedImport_Z3rSettings();
+    bool fast_fanfare = ModSeedImport_Z3rRulesActive() &&
+        seed_settings != NULL && seed_settings->fast_fanfare;
+    if (fast_fanfare ||
+        (ancilla_item_to_link[k] != 0x37 && ancilla_item_to_link[k] != 0x38 &&
+         ancilla_item_to_link[k] != 0x39) ||
+        zelda_read_apui00() == 0)
       goto endif_6;
     ancilla_aux_timer[k]++;
   }
@@ -3885,6 +3893,16 @@ lbl_else:
     goto label_b;
   if (ancilla_step[k] == 2) {
     if (--breaktowerseal_var5 == 0) {
+      if (ModInverted_Active()) {
+        // z3r GanonTowerAnimation ($A4:A031): skip the seal-breaking cutscene
+        // and play the short inverted cue instead.
+        sound_effect_2 = 0x1b;
+        trigger_special_entrance = 0;
+        subsubmodule_index = 0;
+        music_control = 2;
+        sound_effect_1 = 9;
+        return;
+      }
       trigger_special_entrance = 5;
       subsubmodule_index = 0;
       BYTE(R16) = 0;
@@ -4169,7 +4187,12 @@ void Ancilla23_LinkPoof(int k) {  // 88d3bc
       if (!ancilla_step[k]) {
         link_animation_steps = 0;
         link_visibility_status = 0;
-        link_is_bunny = link_is_bunny_mirror = BYTE(overworld_screen_index) & 0x40 ? 1 : 0;
+        if (ModInverted_Active())
+          link_is_bunny = link_is_bunny_mirror =
+            (!link_item_moon_pearl &&
+             ModInverted_PearlRequired(overworld_screen_index)) ? 1 : 0;
+        else
+          link_is_bunny = link_is_bunny_mirror = BYTE(overworld_screen_index) & 0x40 ? 1 : 0;
         if (link_is_bunny)
           LoadGearPalettes_bunny();
         else
@@ -4488,7 +4511,12 @@ kill_me:
       link_give_damage = 0;
       return;
     }
-    link_disable_sprite_damage = 1;
+    {
+      const ModSeedZ3rSettings *s = ModSeedImport_Z3rSettings();
+      link_disable_sprite_damage =
+          (ModSeedImport_Z3rRulesActive() && s != NULL)
+              ? (uint8)s->byrna_invulnerability : 1;
+    }
     if (!--ancilla_aux_timer[k]) {
       ancilla_aux_timer[k] = 1;
       uint8 r0 = kCaneSpark_Magic[link_magic_consumption];
@@ -6707,9 +6735,16 @@ void AncillaAdd_WaterfallSplash() {  // 899b68
 
 void AncillaAdd_GTCutscene() {  // 899b83
   if (link_state_bits & 0x80 | link_auxiliary_state ||
-     (link_has_crystals & 0x7f) != 0x7f ||
+      !ModSeedImport_GanonsTowerOpen() ||
       save_ow_event_info[0x43] & 0x20)
     return;
+
+  if (ModSeedImport_Z3rRulesActive()) {
+    const ModSeedZ3rSettings *s = ModSeedImport_Z3rSettings();
+    MOD_EMIT(kModEv_GtOpen, ModSeedImport_CrystalCount(),
+             s != NULL ? s->ganons_tower_open_target : 7,
+             s != NULL ? s->ganons_tower_open_mode : 0);
+  }
 
   Ancilla_TerminateSparkleObjects();
 

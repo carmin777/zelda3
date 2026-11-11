@@ -16,6 +16,7 @@
 
 #include "../../third_party/cjson/cJSON.h"
 #include "../assets.h"
+#include "../config.h"
 #include "../load_gfx.h"
 #include "../util.h"
 #include "asset_names.h"
@@ -25,6 +26,55 @@
 #include "seed_import.h"
 
 bool g_mods_change_content;
+
+// Snapshot of the mods directory for the options menu. Only filled by
+// Mods_LoadAll; the menu does not own any of these strings.
+enum { kModListCapacity = 128 };
+static ModListInfo g_mod_list[kModListCapacity];
+static int g_mod_list_count;
+
+int Mods_ListCount(void) {
+  return g_mod_list_count;
+}
+
+const ModListInfo *Mods_ListGet(int index) {
+  if (index < 0 || index >= g_mod_list_count)
+    return NULL;
+  return &g_mod_list[index];
+}
+
+static void ModListReset(void) {
+  memset(g_mod_list, 0, sizeof(g_mod_list));
+  g_mod_list_count = 0;
+}
+
+static bool ModListAdd(const char *id, const char *name, int priority,
+                       bool enabled, int manifest_priority,
+                       bool manifest_enabled) {
+  if (g_mod_list_count >= kModListCapacity)
+    return false;
+  for (int i = 0; i < g_mod_list_count; i++) {
+    if (strcmp(g_mod_list[i].id, id) == 0)
+      return false;
+  }
+  ModListInfo *info = &g_mod_list[g_mod_list_count++];
+  snprintf(info->id, sizeof(info->id), "%s", id);
+  snprintf(info->name, sizeof(info->name), "%s", name);
+  info->priority = priority;
+  info->enabled = enabled;
+  info->manifest_priority = manifest_priority;
+  info->manifest_enabled = manifest_enabled;
+  return true;
+}
+
+static void ModListMarkLoaded(const char *id) {
+  for (int i = 0; i < g_mod_list_count; i++) {
+    if (strcmp(g_mod_list[i].id, id) == 0) {
+      g_mod_list[i].loaded = true;
+      return;
+    }
+  }
+}
 
 // Asset sizes as they were before any mod loaded. A plain override must keep
 // these sizes because much of the game treats several assets as fixed tables.
@@ -993,6 +1043,7 @@ static bool ModListContains(const ModEntry *mods, int count, const char *id) {
 }
 
 void Mods_LoadAll(const char *directory) {
+  ModListReset();
   if (!g_original_asset_sizes_set) {
     memcpy(g_original_asset_sizes, g_asset_sizes, sizeof(g_original_asset_sizes));
     g_original_asset_sizes_set = true;
@@ -1023,6 +1074,23 @@ void Mods_LoadAll(const char *directory) {
       continue;
     }
     free(path);
+    int manifest_priority = entry->priority;
+    bool manifest_enabled = entry->enabled;
+    if (Config_IsModDisableOverride(entry->id))
+      entry->enabled = false;
+    else if (Config_IsModEnableOverride(entry->id))
+      entry->enabled = true;
+    int override_priority;
+    if (Config_GetModPriorityOverride(entry->id, &override_priority))
+      entry->priority = override_priority;
+    cJSON *name = cJSON_GetObjectItemCaseSensitive(entry->json, "name");
+    const char *display_name =
+        cJSON_IsString(name) && name->valuestring != NULL &&
+                name->valuestring[0] != 0
+            ? name->valuestring
+            : entry->id;
+    ModListAdd(entry->id, display_name, entry->priority, entry->enabled,
+               manifest_priority, manifest_enabled);
     if (!entry->enabled) {
       fprintf(stderr, "mods: skipped '%s' (disabled)\n", entry->id);
       FreeModEntry(entry);
@@ -1069,6 +1137,7 @@ void Mods_LoadAll(const char *directory) {
       continue;
     char err[512];
     if (LoadOneMod(&mods[i], err, sizeof(err))) {
+      ModListMarkLoaded(mods[i].id);
       fprintf(stderr, "mods: loaded '%s' (priority %d)\n", mods[i].id, mods[i].priority);
     } else {
       fprintf(stderr, "mods: refused '%s': %s\n", mods[i].id, err);

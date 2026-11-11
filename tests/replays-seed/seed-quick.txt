@@ -1,0 +1,4 @@
+# QuickSwap: L with no L-slot item must cycle hud_cur_item.
+1 -
+100 L
+110 -

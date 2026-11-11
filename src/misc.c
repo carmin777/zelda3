@@ -1,5 +1,4 @@
 #include "misc.h"
-#include <stdio.h>
 #include "variables.h"
 #include "hud.h"
 #include "dungeon.h"
@@ -19,6 +18,7 @@
 #include "snes/snes_regs.h"
 #include "assets.h"
 #include "mod/events.h"
+#include "mod/inverted.h"
 #include "mod/items.h"
 #include "mod/seed_import.h"
 #include "mod/seed_oracle.h"
@@ -324,7 +324,26 @@ static void KillAghanim_Func12() {
   nmi_disable_core_updates = 0;
   main_module_index = 9;
   BYTE(BG1VOFS_copy2) = 0;
-  music_control = link_item_moon_pearl ? 9 : 4;
+  const ModSeedZ3rSettings *s = ModSeedImport_Z3rSettings();
+  bool bunny = !link_item_moon_pearl &&
+               ModInverted_PearlRequired(savegame_is_darkworld);
+  if (ModSeedImport_Active() && s != NULL && s->fix_fake_world) {
+    // z3r FixAga2Bunny: after Agahnim 2 the world follows the mode, and the
+    // bunny state follows the pearl rule for that world.
+    if (s->bugfix_set_world_on_agahnim_death)
+      savegame_is_darkworld = s->inverted ? 0 : 0x40;
+    bunny = !link_item_moon_pearl &&
+            ModInverted_PearlRequired(savegame_is_darkworld);
+    if (bunny) {
+      link_player_handler_state = kPlayerState_PermaBunny;
+      link_is_bunny = 1;
+      link_is_bunny_mirror = 1;
+      LoadGearPalettes_bunny();
+    } else {
+      ForceNonbunnyStatus();
+    }
+  }
+  music_control = bunny ? 4 : 9;
   savegame_map_icons_indicator = 6;
 }
 
@@ -558,6 +577,16 @@ int Dungeon_PrepOverlayDma_watergate(int dst, uint16 r8, uint16 r6, int loops) {
 
 void Module05_LoadFile() {  // 828136
   EnableForceBlank();
+  int load_slot = (srm_var1 >> 1) - 1;
+  bool inverted_new_game = ModInverted_BeginNewGameLoad(load_slot);
+  if (inverted_new_game) {
+    // A settings-only inverted save starts outside Link's House on the Dark
+    // World screen. The room override below supplies that screen through the
+    // house exit row instead of the normal pyramid respawn. A seed template
+    // that selects a cave start is handled after the common file-load setup.
+    savegame_is_darkworld = 0x40;
+    player_is_indoors = 0;
+  }
   if (EmuSeedRomActive()) {
     // z3r OnFileLoad ($A4:892C): keep the JP name working buffer and the
     // RomVersionSRAM word that the file-select path temporarily changes.
@@ -568,7 +597,6 @@ void Module05_LoadFile() {  // 828136
   }
   // The save was already copied by CopySaveToWRAM. z3r hooks this same entry
   // (OnFileLoad, $82:8046 in the JP ROM) and its handlers also see the slot.
-  int load_slot = (srm_var1 >> 1) - 1;
   LuaSave_LoadSlot(load_slot);
   MOD_EMIT(kModEv_FileLoad, load_slot, 0, 0);
   overworld_map_state = 0;
@@ -596,6 +624,16 @@ void Module05_LoadFile() {  // 828136
   word_7E02CD = 0x200;
   virq_trigger = 48;
   if (savegame_is_darkworld) {
+    if (inverted_new_game &&
+        ModInverted_UsesStartingAreaExit(which_starting_point)) {
+      // The seed's template selects a single-entrance cave start. Load its
+      // room through the normal start-point branch, then let
+      // Dungeon_LoadEntrance apply the z3r StartingAreaExitTable for the exit.
+      death_var4 = 1;
+      LoadDungeonRoomRebuildHUD();
+      death_var4 = 0;
+      return;
+    }
     if (player_is_indoors) {
       LoadDungeonRoomRebuildHUD();
       return;
@@ -604,7 +642,7 @@ void Module05_LoadFile() {  // 828136
     Hud_Rebuild();
     Hud_UpdateEquippedItem();
     death_var5 = 0;
-    dungeon_room_index = 32;
+    dungeon_room_index = ModInverted_TakeNewGameRoom(32);
     main_module_index = 8;
     submodule_index = 0;
     subsubmodule_index = 0;
@@ -754,10 +792,12 @@ void AncillaAdd_ItemReceipt(uint8 ain, uint8 yin, int chest_pos) {  // 8985e8
 
   int j = link_receiveitem_index;
   bool custom_item = ModItems_IsCustomId((uint8)j);
+  if (!custom_item)
+    ModSeedImport_CountItem((uint8)j, item_receipt_method);
   uint8 seed_special = ModSeedImport_TakeSpecialItem();
   int seed_dungeon = ModSeedImport_TakeReceiptDungeon();
   if (seed_dungeon >= 0)
-    fprintf(stderr, "seed-dungeon target=%d item=%02X\n", seed_dungeon, j);
+    MOD_EMIT(kModEv_SeedItem, j, seed_dungeon, 0);
 
   if (!custom_item) {
   if (seed_special) {
@@ -815,8 +855,10 @@ void AncillaAdd_ItemReceipt(uint8 ain, uint8 yin, int chest_pos) {  // 8985e8
       Hud_RefreshIcon();
     }
   } else if (j == 0x24 && seed_dungeon >= 0 &&
-             seed_dungeon != (BYTE(cur_palace_index_x2) >> 1)) {
-    uint8 *keys = &link_keys_earned_per_dungeon[seed_dungeon];
+             (ModSeedImport_GenericKeysActive() ||
+              seed_dungeon != (BYTE(cur_palace_index_x2) >> 1))) {
+    uint8 *keys = ModSeedImport_GenericKeysActive()
+        ? &link_num_keys : &link_keys_earned_per_dungeon[seed_dungeon];
     if (*keys < 99)
       (*keys)++;
   } else if ((t = 1, j == 0x24) || item_receipt_method != 2 && (j == 0x27 || (t = 3, j == 0x28) || (t = 10, j == 0x31))) {

@@ -610,7 +610,9 @@ static void DumpWalkSprites(DumpTileList *list, const FrameDesc *desc) {
     const FrameDescSprite *s = &desc->sprites[i];
     if (s->oam_index + 1 >= desc->oam_words)
       continue;
-    uint16 oam1 = desc->oam[s->oam_index + 1];
+    if ((int)s->oam_index * 2 + 1 >= (int)desc->oam_words)
+      continue;
+    uint16 oam1 = desc->oam[s->oam_index * 2 + 1];
     int size = s->size;
     int palette = (oam1 & 0xe00) >> 9;
     for (int row_block = 0; row_block < size / 8; row_block++) {

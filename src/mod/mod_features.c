@@ -81,6 +81,37 @@ bool ModFeatures_ParseIni(int section, const char *key, const char *value,
   return false;
 }
 
+int ModFeatures_Count(void) {
+  return (int)countof(kModFeatureDefs);
+}
+
+const char *ModFeatures_Name(int index) {
+  return index >= 0 && index < countof(kModFeatureDefs)
+             ? kModFeatureDefs[index].name
+             : NULL;
+}
+
+uint32 ModFeatures_Mask(int index) {
+  return index >= 0 && index < countof(kModFeatureDefs)
+             ? kModFeatureDefs[index].mask
+             : 0;
+}
+
+int ModFeatures_IniSection(int index) {
+  return index >= 0 && index < countof(kModFeatureDefs)
+             ? kModFeatureDefs[index].ini_section
+             : 0;
+}
+
+bool ModFeatures_IsManagedKey(int section, const char *key) {
+  for (int i = 0; i < countof(kModFeatureDefs); i++) {
+    if (kModFeatureDefs[i].ini_section == section &&
+        StringEqualsNoCase(key, kModFeatureDefs[i].name))
+      return true;
+  }
+  return false;
+}
+
 void ModFeatures_FormatNames(char *out, size_t out_size) {
   if (out_size == 0)
     return;

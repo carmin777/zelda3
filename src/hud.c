@@ -7,6 +7,7 @@
 #include "load_gfx.h"
 #include "mod/hooks.h"
 #include "mod/items.h"
+#include "mod/seed_import.h"
 #include "mod/seed_oracle.h"
 
 static bool Hud_IsNewStyleInventory(void) {
@@ -24,6 +25,14 @@ static bool Hud_IsHorizontalMagicBar(void) {
 
 static bool Hud_IsMenuTimer(void) {
   return (enhanced_features0 & kFeatures0_MenuTimer) != 0;
+}
+
+// z3r HUDDungeonItems: bit 0 keys, 1 big key, 2 map, 3 compass.
+static int Hud_SeedDungeonItems(void) {
+  const ModSeedZ3rSettings *s = ModSeedImport_Z3rSettings();
+  if (ModSeedImport_Z3rRulesActive() && s != NULL)
+    return s->hud_dungeon_items;
+  return 0x0F;
 }
 
 static int Hud_ItemCount(void) {
@@ -676,9 +685,13 @@ void Hud_RefillLogic() {  // 8ddb92
     if (link_lowlife_countdown_timer_beep) {
       link_lowlife_countdown_timer_beep--;
     } else if (!sound_effect_1) {
-      if (!(enhanced_features0 & kFeatures0_DisableLowHealthBeep))
+      const ModSeedZ3rSettings *s = ModSeedImport_Z3rSettings();
+      int beep = 32;
+      if (ModSeedImport_Z3rRulesActive() && s != NULL)
+        beep = s->heart_beep;
+      if (!(enhanced_features0 & kFeatures0_DisableLowHealthBeep) && beep != 0)
         sound_effect_1 = 43;
-      link_lowlife_countdown_timer_beep = 32 - 1;
+      link_lowlife_countdown_timer_beep = beep > 0 ? beep - 1 : 0;
     }
   }
 
@@ -789,8 +802,15 @@ void Hud_Init() {  // 8dddab
   overworld_map_state++;
 }
 
+static int Hud_MenuStep(void) {
+  const ModSeedZ3rSettings *s = ModSeedImport_Z3rSettings();
+  if (ModSeedImport_Z3rRulesActive() && s != NULL && s->menu_speed != 0)
+    return s->menu_speed;
+  return 8;
+}
+
 void Hud_BringMenuDown() {  // 8dde59
-  BG3VOFS_copy2 -= 8;
+  BG3VOFS_copy2 -= Hud_MenuStep();
   if (BG3VOFS_copy2 == 0xff18)
     overworld_map_state++;
 }
@@ -991,7 +1011,7 @@ void Hud_UpdateEquippedItem() {  // 8ddfaf
 }
 
 void Hud_CloseMenu() {  // 8ddfba
-  BG3VOFS_copy2 += 8;
+  BG3VOFS_copy2 += Hud_MenuStep();
   if (BG3VOFS_copy2)
     return;
   Hud_Rebuild();
@@ -1710,6 +1730,7 @@ void Hud_DrawEquipmentBox() {  // 8ded29
     {{0x24bf, 0x64bf, 0x2ccf, 0x6ccf}},
   };
 
+  int hud_items = Hud_SeedDungeonItems();
   uint16 *dst = uvram_screen.row[0].col;
   if (Hud_IsNewStyleInventory()) {
     // The 24-slot Redux layout puts every ability/equipment icon in the
@@ -1724,15 +1745,15 @@ void Hud_DrawEquipmentBox() {  // 8ded29
     Hud_DrawItem(dst + HUDXY(22, 24), &kHudItemArmor[link_armor]);
     Hud_DrawItem(dst + HUDXY(25, 24), &kHudItemHeartPieces[link_heart_pieces]);
 
-    if (cur_palace_index_x2 != 0xff &&
+    if ((hud_items & 4) && cur_palace_index_x2 != 0xff &&
        (link_dungeon_map << (cur_palace_index_x2 >> 1)) & 0x8000) {
       Hud_DrawItem(dst + HUDXY(23, 10), &kHudItemDungeonMap[0]);
     }
-    if (cur_palace_index_x2 != 0xff &&
+    if ((hud_items & 8) && cur_palace_index_x2 != 0xff &&
        (link_compass << (cur_palace_index_x2 >> 1)) & 0x8000) {
       Hud_DrawItem(dst + HUDXY(25, 10), &kHudItemDungeonCompass[0]);
     }
-    if (cur_palace_index_x2 != 0xff &&
+    if ((hud_items & 2) && cur_palace_index_x2 != 0xff &&
        (link_bigkey << (cur_palace_index_x2 >> 1)) & 0x8000) {
       Hud_DrawItem(dst + HUDXY(27, 10), &kHudItemPalaceItem[CheckPalaceItemPosession()]);
     }
@@ -1757,15 +1778,15 @@ void Hud_DrawEquipmentBox() {  // 8ded29
   Hud_DrawItem(dst + HUDXY(25, 23), &kHudItemShield[link_shield_type]);
   Hud_DrawItem(dst + HUDXY(28, 23), &kHudItemArmor[link_armor]);
 
-  if (cur_palace_index_x2 != 0xff &&
+  if ((hud_items & 2) && cur_palace_index_x2 != 0xff &&
      (link_bigkey << (cur_palace_index_x2 >> 1)) & 0x8000) {
     Hud_DrawItem(dst + HUDXY(28, 27), &kHudItemPalaceItem[CheckPalaceItemPosession()]);
   }
-  if (cur_palace_index_x2 != 0xff &&
+  if ((hud_items & 4) && cur_palace_index_x2 != 0xff &&
      (link_dungeon_map << (cur_palace_index_x2 >> 1)) & 0x8000) {
     Hud_DrawItem(dst + HUDXY(22, 27), &kHudItemDungeonMap[0]);
   }
-  if (cur_palace_index_x2 != 0xff &&
+  if ((hud_items & 8) && cur_palace_index_x2 != 0xff &&
      (link_compass << (cur_palace_index_x2 >> 1)) & 0x8000) {
     Hud_DrawItem(dst + HUDXY(25, 27), &kHudItemDungeonCompass[0]);
   }
@@ -1911,6 +1932,48 @@ static void Hud_Update_Magic() {  // 8dfc09
   dst[HUDXY(1, 4)] = src[3];
 }
 
+// z3r newhud.asm NewHUD_DrawItemCounter: TotalItemCounter / TotalItemCount.
+// The native HUD has no goal-indicator cell, so the counter uses the free
+// strip below the rupee/bomb/arrow counters.
+static void Hud_DrawSeedItemCounter(uint16 *dst) {
+  const ModSeedZ3rSettings *s = ModSeedImport_Z3rSettings();
+  if (!ModSeedImport_Z3rRulesActive() || s == NULL || !s->item_counter_hud)
+    return;
+  uint8 counter[4], total[4];
+  Hud_IntToDecimal(WORD(g_ram[0xF423]), counter);
+  Hud_IntToDecimal(s->total_item_count, total);
+  int first = s->total_item_count >= 1000 ? 0 : 1;
+  int x = 8;
+  for (int i = first; i < 4; i++)
+    dst[HUDXY(x++, 4)] = 0x2400 | counter[i];
+  dst[HUDXY(x++, 4)] = 0x2830;
+  for (int i = first; i < 4; i++)
+    dst[HUDXY(x++, 4)] = 0x2400 | total[i];
+}
+
+// z3r newhud.asm DrawMapCounts: keys found in chests / keys placed in chests.
+// MapHUDMode bit 1 requires the dungeon map, bit 2 always shows the count.
+static void Hud_DrawSeedMapHud(uint16 *dst) {
+  const ModSeedZ3rSettings *s = ModSeedImport_Z3rSettings();
+  if (!ModSeedImport_Z3rRulesActive() || s == NULL || !s->map_hud_mode)
+    return;
+  int palace = BYTE(cur_palace_index_x2);
+  if (palace == 0xFF)
+    return;
+  int dungeon = palace >> 1;
+  if (dungeon < 0 || dungeon >= 13)
+    return;
+  if (!(s->map_hud_mode & 2) &&
+      !((link_dungeon_map << dungeon) & 0x8000))
+    return;
+  uint8 collected[4], total[4];
+  Hud_IntToDecimal(ModSeedImport_MapKeyCollected(dungeon), collected);
+  Hud_IntToDecimal(ModSeedImport_MapKeyTotal(dungeon), total);
+  dst[HUDXY(17, 2)] = 0x2400 | collected[3];
+  dst[HUDXY(18, 2)] = 0x2830;
+  dst[HUDXY(19, 2)] = 0x2400 | total[3];
+}
+
 static void Hud_Update_Inventory() {  // 8dfc09
   uint8 d[4];
   Hud_IntToDecimal(link_rupees_actual, d);
@@ -1974,7 +2037,7 @@ static void Hud_Update_Inventory() {  // 8dfc09
 
   // Show keys
   d[3] = 0x7f;
-  if (link_num_keys != 0xff)
+  if ((Hud_SeedDungeonItems() & 1) && link_num_keys != 0xff)
     Hud_IntToDecimal(link_num_keys, d);
   dst[HUDXY(10, 1)] = 0x2400 | d[3];
   if (dst[HUDXY(10, 1)] == 0x247f) {
@@ -1985,6 +2048,9 @@ static void Hud_Update_Inventory() {  // 8dfc09
       dst[HUDXY(10, 0)] = 0x247f;
     }
   }
+
+  Hud_DrawSeedItemCounter(hud_tile_indices_buffer);
+  Hud_DrawSeedMapHud(hud_tile_indices_buffer);
 }
 
 void Hud_Rebuild() {  // 8dfa70
@@ -2046,7 +2112,10 @@ const uint16 *Hud_GetItemBoxPtr(int item) {
 }
 
 void Hud_HandleItemSwitchInputs() {
-  if (!(enhanced_features0 & kFeatures0_SwitchLR))
+  const ModSeedZ3rSettings *s = ModSeedImport_Z3rSettings();
+  bool quick_swap = ModSeedImport_Z3rRulesActive() && s != NULL &&
+                    s->quick_swap;
+  if (!(enhanced_features0 & kFeatures0_SwitchLR) && !quick_swap)
     return;
   
   bool direction;

@@ -18,6 +18,7 @@
 #include "messaging.h"
 #include "mod/events.h"
 #include "mod/hooks.h"
+#include "mod/inverted.h"
 #include "mod/seed_import.h"
 #include "assets.h"
 
@@ -190,6 +191,15 @@ static const uint16 kTileAttrsByDoor[] = {
   0x8080, 0x8080, 0x8080, 0x8080, 0x8282, 0x8e8e, 0x8080, 0x8282, 0x8080, 0x8080, 0x8080, 0x8282, 0x8282, 0x8080, 0x8080, 0x8080,
   0x8484, 0x8484, 0x8686, 0x8888, 0x8686, 0x8686, 0x8080, 0x8080,
 };
+static bool SeedGenericKeys(void) {
+  const ModSeedZ3rSettings *s = ModSeedImport_Z3rSettings();
+  return ModSeedImport_Z3rRulesActive() && s != NULL && s->generic_keys;
+}
+
+static int SeedKeySlot(int palace) {
+  return SeedGenericKeys() ? 0 : (palace == 2 ? 0 : (palace >> 1));
+}
+
 static PlayerHandlerFunc *const kDungeon_Effect_Handler[28] = {
   &LayerEffect_Nothing,
   &LayerEffect_Nothing,
@@ -6433,7 +6443,8 @@ void Module_PreDungeon() {  // 82821e
 
   Dungeon_LoadEntrance();
   uint8 d = cur_palace_index_x2;
-  link_num_keys = (d != 0xff) ? link_keys_earned_per_dungeon[d == 2 ? 0 : (d >> 1)] : 0xff;
+  link_num_keys = (d != 0xff)
+      ? link_keys_earned_per_dungeon[SeedKeySlot(d)] : 0xff;
   Hud_Rebuild();
   dung_num_lit_torches = 0;
   hdr_dungeon_dark_with_lantern = 0;
@@ -7852,7 +7863,8 @@ void Module11_02_LoadEntrance() {  // 829b1c
   Dungeon_LoadEntrance();
 
   uint8 dung = BYTE(cur_palace_index_x2);
-  link_num_keys = (dung != 255) ? link_keys_earned_per_dungeon[((dung == 2) ? 0 : dung) >> 1] : 255;
+  link_num_keys = (dung != 255)
+      ? link_keys_earned_per_dungeon[SeedKeySlot(dung)] : 255;
   Hud_Rebuild();
   link_this_controls_sprite_oam = 4;
   player_near_pit_state = 3;
@@ -7922,9 +7934,7 @@ void SaveDungeonKeys() {  // 82a1c7
   uint8 idx = cur_palace_index_x2;
   if (idx == 0xff)
     return;
-  if (idx == 2)
-    idx = 0;
-  link_keys_earned_per_dungeon[idx >> 1] = link_num_keys;
+  link_keys_earned_per_dungeon[SeedKeySlot(idx)] = link_num_keys;
 }
 
 void Dungeon_AdjustAfterSpiralStairs() {  // 82a2f0
@@ -8346,6 +8356,9 @@ void Dungeon_LoadEntrance() {  // 82d8b3
   WORD(death_var5) = 0;
   if (WORD(follower_indicator) == 4 || WORD(death_var4)) {
     int i = which_starting_point;
+    if (ModSeedImport_Active())
+      previous_overworld_door = ModSeedImport_StartingDoor(
+          i, previous_overworld_door);
     WORD(which_entrance) = kStartingPoint_entrance[i];
     dungeon_room_index = dungeon_room_index2 = kStartingPoint_rooms[i];
     BG1VOFS_copy = BG2VOFS_copy = BG1VOFS_copy2 = BG2VOFS_copy2 = kStartingPoint_scrollY[i];
@@ -8389,6 +8402,9 @@ void Dungeon_LoadEntrance() {  // 82d8b3
     if (i == 0 && sram_progress_indicator == 0)
       queued_music_control = 0xff;
     death_var4 = 0;
+    // z3r AllowStartFromSingleEntranceCave ($82:D9B9): the seed can replace
+    // the exit cache of a start point with a row from its own table.
+    ModInverted_ApplyStartingAreaExit();
   } else {
     int i = which_entrance;
     dungeon_room_index = dungeon_room_index2 = kEntranceData_rooms[i];

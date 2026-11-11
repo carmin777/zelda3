@@ -250,6 +250,7 @@
     <ClCompile Include="src\mod\lua_save.c">
       <PreprocessorDefinitions Condition="'$(ZELDA3_LUA)'=='1'">ZELDA3_LUA;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
+    <ClCompile Include="src\mod\menu.c" />
     <ClCompile Include="src\mod\mods.c" />
     <ClCompile Include="src\mod\nwa_server.c" />
     <ClCompile Include="src\mod\state_table.c" />
@@ -467,6 +468,7 @@
     <ClInclude Include="src\mod\lua_internal.h" />
     <ClInclude Include="src\mod\lua_save.h" />
     <ClInclude Include="src\mod\lua_script.h" />
+    <ClInclude Include="src\mod\menu.h" />
     <ClInclude Include="src\mod\mods.h" />
     <ClInclude Include="src\mod\nwa_server.h" />
     <ClInclude Include="src\mod\state_table.h" />

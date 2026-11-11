@@ -1,0 +1,15 @@
+{
+  "format": "zelda3-voxel-profile",
+  "version": 1,
+  "extends": "../default-profile.json",
+  "render": {
+    "mesh_detail": 8
+  },
+  "lighting": {
+    "enabled": false
+  },
+  "shadows": {
+    "enabled": false,
+    "strength": 0.0
+  }
+}

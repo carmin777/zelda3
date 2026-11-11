@@ -58,14 +58,20 @@ implementação de referência.
 
 ### 3.3 Voxel
 
-- Cada tile 8×8 vira uma coluna de voxels com altura vinda do atributo de
-  colisão (tabela padrão por tipo de atributo) e a cor dos pixels do
-  próprio tile (o visual continua sendo o do jogo, como no 3dSen).
+- Cada célula 8×8 vira uma peça de diorama classificada pelo desenho: `flat`
+  (chão/água, um quad), `top` (telhado/borda, arte na face de cima) ou
+  `upright` (parede/árvore/fachada, arte reconstruída na face sul). A altura
+  vem da colisão e do número de linhas desenhadas; adereços transparentes são
+  extrudados por pixel, então arbustos e vãos de cerca não viram pilares.
+  A cor continua sendo a do tile do jogo, como no 3dSen.
 - Sprites viram "cartões" 3D ou voxels de 1 de espessura, posicionados
   com `z`.
-- Câmera: perspectiva inclinada acima do Link, com opção de ângulo livre;
-  o enquadramento continua o da tela do SNES (para não revelar o que o
-  jogo esconde), com widescreen opcional.
+- Câmera: perspectiva inclinada acima do Link, com níveis (off/15°/35°/50°) e
+  transição suave. A câmera inclinada enxerga um trapézio maior que a tela do
+  SNES; o plugin desenha **a área ou sala atual inteira que o jogo já carregou**
+  (map16 do overworld, tilemap da sala, até 2×2 telas numa masmorra), sem
+  revelar telas ou salas vizinhas. O que fica fora dessa janela é backdrop, e o
+  HUD continua em 2D nítido.
 - Perfil opcional por arquivo (dados, não código): altura por tile ou por
   tipo de sprite, exceções por sala.
 

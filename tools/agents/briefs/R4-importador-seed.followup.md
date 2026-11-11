@@ -1,30 +1,29 @@
-# R4 — rodada 3: textos, dicas e o resto das regras
+# R4 — rodada 5: o que falta das regras do z3r, com prova
 
-Revisei e mergeei `e1e848f` (248 de 248 locais, chaves pela masmorra de
-destino, inventário inicial, opção `Z3rRules`). Traga a branch para o estado
-atual (`git merge engine/modloader`).
+Revisei e mergeei `9a83e31` (flags do `$B0:8000`: GT, Ganon, goal items,
+HUD, mapa, Byrna, menu, beep). Traga a branch para o estado atual
+(`git merge engine/modloader`); `git status` limpo antes de começar.
 
-1. **Limpeza**: tire o `fprintf(stderr, "seed-dungeon target=...")` de
-   `src/misc.c` (saída de depuração no código do jogo); se algum teste
-   precisar dessa informação, use um evento de mod ou o `--mod-trace`.
-2. **Textos e dicas**: extraia da ROM da seed os textos do z3r (dicas dos
-   telepatas e placas, textos dos itens novos, pedestal, Ganon) e aplique
-   pelo mecanismo de diálogo do modkit (o mesmo que importa diálogo de
-   hacks), gerando os dados no mod da seed (fora do git). Use a tabela
-   `SeedOracle_JpMessageId` para alinhar IDs onde servir. Prova: um replay
-   lendo uma dica (texto igual ao da ROM da seed).
-3. **Lojas que dividem o byte baixo de sala** (`0x12`, `0x0f`): modele a
-   porta de entrada (`PreviousOverworldDoor`, `$7F5099`) para cada loja ter
-   o seu inventário.
-4. **Configurações de `$B0:8000`**: liste quais flags esta seed usa e quais
-   o motor ainda não aplica (modo do mundo, objetivo, etc.); aplique as que
-   forem só dado e documente as que exigem comportamento novo (por exemplo
-   inverted) como pendências.
-5. **Uma seed jogável**: escreva no `RANDOMIZER-IMPORT.md` o passo a passo
-   para jogar a seed no motor em C (gerar o mod, onde pôr, como
-   rodar) e o que ainda difere da ROM da seed.
+O `InvertedMode` é outra tarefa (R5); não mexa nele.
 
-## Verificação
+1. **Modos de Ganon 6–8 e 10–11**: implemente os contadores que eles pedem
+   (chefes derrotados, itens coletados, etc.) a partir do `goalitem.asm` e
+   do `stats.asm` do z3r, só com `Z3rRules`.
+2. **Flags que esta seed não liga**, para a próxima seed não quebrar:
+   `FakeBoots`, `QuickSwap`, `GenericKeys`, `ItemCounterHUD`, `MapHUDMode`,
+   `NoBGM`, `FastFanfare`. Cada uma lida do `z3r_settings`, com o hook z3r
+   de origem, e uma prova com o `z3r_settings` forjado num passo do teste
+   (como a prova da GT), sem dados da seed no git.
+3. **Provas dinâmicas que faltam**: dano do Ganon bloqueado e liberado
+   pelo modo da seed; Rupoor; um item progressivo recebido duas vezes
+   (espada 1 → 2, por exemplo).
+4. **Smoke test da seed jogada**: com o `tools/seed_route.py` em C-only
+   (`--seed-rom` não, aqui é o motor US com o mod da seed), gere uma rota
+   curta que abra baús de verdade numa masmorra (Hyrule Castle ou Eastern)
+   e confira os itens recebidos contra a tabela da seed. Vira um passo do
+   portão (pulado com aviso sem a ROM da seed).
 
-`make -j2`, `make -j2 NO_LUA=1` sem warnings; `tools/regress.sh` com todas
-as linhas `ok` e a linha final; a cobertura continua 248/248.
+Docs e comentários impessoais. Verificação: `make -j2`, `make -j2 NO_LUA=1`
+sem warnings; `tools/regress.sh` com todas as linhas `ok` e a linha final;
+cobertura 248/248; tabela de flags do `RANDOMIZER-IMPORT.md` sem pendentes
+além do `InvertedMode`.

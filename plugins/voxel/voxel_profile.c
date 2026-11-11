@@ -52,6 +52,8 @@ enum {
   kExceptionAttr = 1 << 5,
   kExceptionRaw = 1 << 6,
   kExceptionTile = 1 << 7,
+  kExceptionRawRange = 1 << 8,
+  kExceptionTileRange = 1 << 9,
 };
 
 typedef struct VoxelException {
@@ -64,7 +66,10 @@ typedef struct VoxelException {
   int attr;
   int raw;
   int tile;
+  int raw_min, raw_max;
+  int tile_min, tile_max;
   float height;
+  VoxelArtMode mode;
 } VoxelException;
 
 struct VoxelProfile {
@@ -79,8 +84,9 @@ struct VoxelProfile {
 };
 
 static void SetDefaultCamera(VoxelCameraSettings *camera) {
-  camera->angle_deg = 58.0f;
-  camera->distance_scale = 1.0f;
+  camera->angle_deg = 54.0f;
+  camera->indoor_angle_deg = 45.0f;
+  camera->distance_scale = 1.5f;
   camera->height_scale = 1.0f;
   camera->follow_link = true;
   camera->yaw_deg = 0.0f;
@@ -88,11 +94,19 @@ static void SetDefaultCamera(VoxelCameraSettings *camera) {
 }
 
 static void SetDefaultRender(VoxelRenderSettings *render) {
-  render->side_shade = 0.72f;
+  render->side_shade = 0.86f;
   render->sprite_scale = 1.0f;
   render->floor_step = 0.5f;
   render->skirt = 1.0f;
   render->height_scale = 1.0f;
+  render->tilt_shift = 0.0f;
+  render->exposure = 1.04f;
+  render->stack_height = 2.2f;
+  render->mesh_detail = 1;
+  render->face_top = 1.0f;
+  render->face_front = 0.98f;
+  render->face_side = 0.92f;
+  render->face_back = 0.85f;
 }
 
 static void SetDefaultLight(VoxelLightSettings *light) {
@@ -105,10 +119,107 @@ static void SetDefaultLight(VoxelLightSettings *light) {
 
 static void SetDefaultShadows(VoxelShadowSettings *shadows) {
   shadows->enabled = true;
-  shadows->strength = 0.32f;
+  shadows->strength = 0.15f;
   shadows->length = 1.5f;
   shadows->columns = true;
   shadows->sprites = true;
+}
+
+// ALttP houses are a single drawn object: the upper Map16 band is the roof
+// seen from above and the lower band is the facade seen face-on. The raw
+// values repeat for every placement of the same house style, so a small
+// range table covers all of them. The profile file can override these.
+static const VoxelException kBuiltinExceptions[] = {
+  { kExceptionRawRange, false, 0, 0, 0, 0, 0, 0, 0,
+    0x3e8, 0x3e8, 0, 0, 1.0f, kVoxelArt_Top },
+  { kExceptionRawRange, false, 0, 0, 0, 0, 0, 0, 0,
+    0x3f0, 0x3f0, 0, 0, 1.0f, kVoxelArt_Top },
+  { kExceptionRawRange, false, 0, 0, 0, 0, 0, 0, 0,
+    0x3e4, 0x3e4, 0, 0, 2.5f, kVoxelArt_Top },
+  { kExceptionRawRange, false, 0, 0, 0, 0, 0, 0, 0,
+    0x3f3, 0x3f3, 0, 0, 2.5f, kVoxelArt_Top },
+  { kExceptionRawRange, false, 0, 0, 0, 0, 0, 0, 0,
+    0x3ff, 0x403, 0, 0, 2.5f, kVoxelArt_Top },
+  { kExceptionRawRange, false, 0, 0, 0, 0, 0, 0, 0,
+    0x407, 0x40b, 0, 0, 2.5f, kVoxelArt_Top },
+  { kExceptionRawRange, false, 0, 0, 0, 0, 0, 0, 0,
+    0x410, 0x418, 0, 0, 0.0f, kVoxelArt_Flat },
+  { kExceptionRawRange, false, 0, 0, 0, 0, 0, 0, 0,
+    0x0da5, 0x0da7, 0, 0, 0.0f, kVoxelArt_Flat },
+  { kExceptionRawRange, false, 0, 0, 0, 0, 0, 0, 0,
+    0x41b, 0x41c, 0, 0, 2.5f, kVoxelArt_Upright },
+  // Lost Woods (area 0) paints its dirt patches with Map16 0x36 on top of the
+  // raised grass shelf. Keep the patch at the shelf level, flat, instead of
+  // carving a four-pixel pit in the lawn.
+  { kExceptionArea | kExceptionRawRange | kExceptionIndoors, false,
+    0, 0, 0, 0, 0, 0, 0, 0x36, 0x36, 0, 0, 1.5f, kVoxelArt_Flat },
+  // Lost Woods (area 0) draws its brown barricades as a single low
+  // embankment. The generic cliff height turns them into tall walls that hide
+  // the round crowns behind, so keep this area's collision walls one layer.
+  { kExceptionArea | kExceptionAttr | kExceptionIndoors, false,
+    0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1.0f, kVoxelArt_Auto },
+  { kExceptionArea | kExceptionAttr | kExceptionIndoors, false,
+    0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 1.0f, kVoxelArt_Auto },
+  { kExceptionArea | kExceptionAttr | kExceptionIndoors, false,
+    0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 1.0f, kVoxelArt_Auto },
+  // The hut's dark doorway/shading band is drawn over a pit-height attribute;
+  // stand it up at the facade instead of laying it flat below the roof.
+  { kExceptionArea | kExceptionRawRange | kExceptionIndoors, false,
+    0, 0, 0, 0, 0, 0, 0, 0x325, 0x325, 0, 0, 0.5f, kVoxelArt_Upright },
+  // Eastern Palace grounds (area 41) draw their ledges with the same one-tile
+  // fall as Lost Woods. Keep the plateau edge one layer so the cell steps do
+  // not read as a sawtooth.
+  { kExceptionArea | kExceptionAttr | kExceptionIndoors, false,
+    0, 41, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1.0f, kVoxelArt_Auto },
+  { kExceptionArea | kExceptionAttr | kExceptionIndoors, false,
+    0, 41, 0, 0, 2, 0, 0, 0, 0, 0, 0, 1.0f, kVoxelArt_Auto },
+  { kExceptionArea | kExceptionAttr | kExceptionIndoors, false,
+    0, 41, 0, 0, 3, 0, 0, 0, 0, 0, 0, 1.0f, kVoxelArt_Auto },
+  // The Dark World swamp (area 82) paints its mud and flower ground with the
+  // same Map16 ids the overworld uses for cliff tops. Nothing there is a
+  // terrace: keep those drawings flat so the grey/violet patches stay ground.
+  { kExceptionArea | kExceptionRawRange | kExceptionIndoors, false,
+    0, 82, 0, 0, 0, 0, 0, 0x34, 0x36, 0, 0, 0.0f, kVoxelArt_Flat },
+  // The Dark World village (area 98) uses Map16 0x34 for its raised village
+  // ground with gravestones painted into the tile. At the generic cliff
+  // height that whole square becomes a plateau and the posts stay flat; keep
+  // this area's square flat and let the embedded-prop split raise only the
+  // painted silhouette.
+  { kExceptionArea | kExceptionRawRange | kExceptionIndoors, false,
+    0, 98, 0, 0, 0, 0, 0, 0x34, 0x34, 0, 0, 0.0f, kVoxelArt_Flat },
+  // The Dark World village graveyard paints each tombstone into an opaque
+  // ground tile. Only these tiles may split into a ground quad and a small
+  // upright billboard; running that split on every tile turned cliff faces
+  // and house facades into thin stretched cards.
+  { kExceptionArea | kExceptionRawRange | kExceptionIndoors, false,
+    0, 98, 0, 0, 0, 0, 0, 0x21b, 0x21b, 0, 0, 1.5f, kVoxelArt_Prop },
+  // Overworld Map16 0x34/0x35 is used both for the round forest canopy
+  // (low tile numbers) and for the cliff/room wall face (high tile numbers).
+  // Stack the canopy, keep the wall face upright.
+  { kExceptionRawRange | kExceptionTileRange | kExceptionIndoors, false,
+    0, 0, 0, 0, 0, 0, 0, 0x34, 0x35, 0, 159, 1.5f, kVoxelArt_Stack },
+  { kExceptionRawRange | kExceptionTileRange | kExceptionIndoors, false,
+    0, 0, 0, 0, 0, 0, 0, 0x34, 0x35, 160, 1023, 1.5f,
+    kVoxelArt_Upright },
+  { kExceptionRawRange | kExceptionIndoors, false, 0, 0, 0, 0, 0, 0, 0,
+    0x644, 0x663, 0, 0, 1.5f, kVoxelArt_Stack },
+  // Overworld Map16 tree ranges. The same numbers are ordinary dungeon
+  // attributes indoors, so keep the canopy rule outside only.
+  { kExceptionRawRange | kExceptionIndoors, false, 0, 0, 0, 0, 0, 0, 0,
+    0x365, 0x379, 0, 0, 1.5f, kVoxelArt_Stack },
+  { kExceptionRawRange | kExceptionIndoors, false, 0, 0, 0, 0, 0, 0, 0,
+    0x095, 0x09c, 0, 0, 1.5f, kVoxelArt_Stack },
+};
+
+static void AddBuiltinExceptions(VoxelProfile *profile) {
+  int count = (int)(sizeof(kBuiltinExceptions) / sizeof(kBuiltinExceptions[0]));
+  profile->exceptions = (VoxelException *)calloc(
+      (size_t)count, sizeof(*profile->exceptions));
+  if (profile->exceptions == NULL)
+    return;
+  memcpy(profile->exceptions, kBuiltinExceptions, sizeof(kBuiltinExceptions));
+  profile->exception_count = count;
+  profile->exception_capacity = count;
 }
 
 VoxelProfile *VoxelProfile_CreateDefault(void) {
@@ -120,6 +231,7 @@ VoxelProfile *VoxelProfile_CreateDefault(void) {
   SetDefaultRender(&profile->render);
   SetDefaultLight(&profile->light);
   SetDefaultShadows(&profile->shadows);
+  AddBuiltinExceptions(profile);
   return profile;
 }
 
@@ -183,6 +295,22 @@ static bool JsonHas(const cJSON *o, const char *key) {
   return cJSON_GetObjectItemCaseSensitive(o, key) != NULL;
 }
 
+static VoxelArtMode ParseArtMode(const char *s) {
+  if (s == NULL)
+    return kVoxelArt_Auto;
+  if (strcmp(s, "flat") == 0)
+    return kVoxelArt_Flat;
+  if (strcmp(s, "top") == 0)
+    return kVoxelArt_Top;
+  if (strcmp(s, "upright") == 0)
+    return kVoxelArt_Upright;
+  if (strcmp(s, "stack") == 0)
+    return kVoxelArt_Stack;
+  if (strcmp(s, "prop") == 0)
+    return kVoxelArt_Prop;
+  return kVoxelArt_Auto;
+}
+
 static int ParseLayer(const cJSON *item) {
   if (cJSON_IsString(item)) {
     if (strcmp(item->valuestring, "bg1") == 0)
@@ -203,6 +331,9 @@ static void ParseCamera(VoxelProfile *profile, const cJSON *camera) {
     return;
   profile->camera.angle_deg =
       (float)JsonDouble(camera, "angle", profile->camera.angle_deg);
+  profile->camera.indoor_angle_deg =
+      (float)JsonDouble(camera, "indoor_angle",
+                        profile->camera.indoor_angle_deg);
   profile->camera.distance_scale =
       (float)JsonDouble(camera, "distance", profile->camera.distance_scale);
   profile->camera.height_scale =
@@ -228,6 +359,22 @@ static void ParseRender(VoxelProfile *profile, const cJSON *render) {
       (float)JsonDouble(render, "skirt", profile->render.skirt);
   profile->render.height_scale =
       (float)JsonDouble(render, "height_scale", profile->render.height_scale);
+  profile->render.tilt_shift =
+      (float)JsonDouble(render, "tilt_shift", profile->render.tilt_shift);
+  profile->render.exposure =
+      (float)JsonDouble(render, "exposure", profile->render.exposure);
+  profile->render.stack_height = (float)JsonDouble(
+      render, "stack_height", profile->render.stack_height);
+  profile->render.mesh_detail = (int)JsonDouble(render, "mesh_detail",
+                                                profile->render.mesh_detail);
+  profile->render.face_top =
+      (float)JsonDouble(render, "face_top", profile->render.face_top);
+  profile->render.face_front =
+      (float)JsonDouble(render, "face_front", profile->render.face_front);
+  profile->render.face_side =
+      (float)JsonDouble(render, "face_side", profile->render.face_side);
+  profile->render.face_back =
+      (float)JsonDouble(render, "face_back", profile->render.face_back);
 }
 
 static void ParseLight(VoxelProfile *profile, const cJSON *light) {
@@ -330,6 +477,19 @@ static bool AppendException(VoxelProfile *profile, const cJSON *item) {
     e->flags |= kExceptionTile;
     e->tile = JsonInt(item, "tile", 0);
   }
+  if (JsonHas(item, "raw_min") || JsonHas(item, "raw_max")) {
+    e->flags |= kExceptionRawRange;
+    e->raw_min = JsonInt(item, "raw_min", 0);
+    e->raw_max = JsonInt(item, "raw_max", 0xffff);
+  }
+  if (JsonHas(item, "tile_min") || JsonHas(item, "tile_max")) {
+    e->flags |= kExceptionTileRange;
+    e->tile_min = JsonInt(item, "tile_min", 0);
+    e->tile_max = JsonInt(item, "tile_max", 0x3ff);
+  }
+  const cJSON *mode = cJSON_GetObjectItemCaseSensitive(item, "mode");
+  if (cJSON_IsString(mode))
+    e->mode = ParseArtMode(mode->valuestring);
   return true;
 }
 
@@ -451,6 +611,12 @@ static bool ExceptionMatches(const VoxelException *e, const FrameDesc *desc,
     return false;
   if ((e->flags & kExceptionTile) && tile != e->tile)
     return false;
+  if ((e->flags & kExceptionRawRange) &&
+      (raw < e->raw_min || raw > e->raw_max))
+    return false;
+  if ((e->flags & kExceptionTileRange) &&
+      (tile < e->tile_min || tile > e->tile_max))
+    return false;
   return true;
 }
 
@@ -470,15 +636,30 @@ float VoxelProfile_Height(const VoxelProfile *profile, const FrameDesc *desc,
   return 0.0f;
 }
 
+VoxelArtMode VoxelProfile_Art(const VoxelProfile *profile,
+                              const FrameDesc *desc, int layer, int attr,
+                              int raw, int tile) {
+  if (profile != NULL) {
+    for (int i = 0; i < profile->exception_count; i++) {
+      const VoxelException *e = &profile->exceptions[i];
+      if (e->mode != kVoxelArt_Auto &&
+          ExceptionMatches(e, desc, layer, attr, raw, tile))
+        return e->mode;
+    }
+  }
+  return kVoxelArt_Auto;
+}
+
 const VoxelCameraSettings *VoxelProfile_Camera(const VoxelProfile *profile) {
   static const VoxelCameraSettings kDefault = {
-      58.0f, 1.0f, 1.0f, true, 0.0f, 1.0f};
+      60.0f, 45.0f, 1.5f, 1.0f, true, 0.0f, 1.0f};
   return profile != NULL ? &profile->camera : &kDefault;
 }
 
 const VoxelRenderSettings *VoxelProfile_Render(const VoxelProfile *profile) {
   static const VoxelRenderSettings kDefault = {
-      0.72f, 1.0f, 0.5f, 1.0f, 1.0f};
+      0.86f, 1.0f, 0.5f, 1.0f, 1.0f, 0.0f, 1.02f, 2.2f, 1, 1.0f, 0.98f,
+      0.92f, 0.85f};
   return profile != NULL ? &profile->render : &kDefault;
 }
 
@@ -490,6 +671,6 @@ const VoxelLightSettings *VoxelProfile_Light(const VoxelProfile *profile) {
 
 const VoxelShadowSettings *VoxelProfile_Shadows(const VoxelProfile *profile) {
   static const VoxelShadowSettings kDefault = {
-      true, 0.32f, 1.5f, true, true};
+      true, 0.15f, 1.5f, true, true};
   return profile != NULL ? &profile->shadows : &kDefault;
 }

@@ -4,6 +4,8 @@
 #include "ancilla.h"
 #include "variables.h"
 #include "overworld.h"
+#include "mod/inverted.h"
+#include "mod/seed_import.h"
 #include "mod/seed_oracle.h"
 
 static const uint8 kDetectTiles_tab0[] = { 8, 24, 0, 15 };
@@ -23,7 +25,11 @@ uint8 Overworld_GetTileAttributeAtLocation(uint16 x, uint16 y) {  // 80882e
   t |= (x & 1);
   t = GetMap16toMap8Table()[t];
 
-  uint8 rv = GetMap8toTileAttr()[t & 0x1ff];
+  uint8 rv;
+  if (ModInverted_Active() && BYTE(overworld_screen_index) == 0x47)
+    rv = ModSeedImport_TileAttribute(t & 0x1ff, GetMap8toTileAttr()[t & 0x1ff]);
+  else
+    rv = GetMap8toTileAttr()[t & 0x1ff];
   if (rv >= 0x10 && rv < 0x1C) {
     rv |= (t >> 14) & 1;
   }

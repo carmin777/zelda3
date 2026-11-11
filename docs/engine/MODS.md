@@ -53,7 +53,7 @@ Só `id` e `api` são obrigatórios. `api` deve ser `1`.
 | `table_overrides` | Objeto `nome_da_tabela -> arquivo`, sempre com o tamanho exato. Veja "Tabelas do jogo". |
 | `patches` | Lista de arquivos JSON de patches. |
 | `script` | Caminho para um script Lua executado quando o mod carrega. |
-| `seed_data` | JSON gerado por `tools/alttpr_seed.py import` (veja `RANDOMIZER-IMPORT.md`). |
+| `seed_data` | JSON gerado por `tools/alttpr_seed.py import` (veja `RANDOMIZER-IMPORT.md`). O mesmo import pode gerar `content/dialogue.txt` e, com `--build`, o override `kDialogue`. |
 
 ### Caminhos
 
@@ -485,6 +485,9 @@ Todo evento tem `ev.a`, `ev.b` e `ev.c`. Além disso:
 | `ItemReceive` | `ev.item`, `ev.chest`, `ev.method` |
 | `ChestOpen` | `ev.room`, `ev.chest` |
 | `DialogueOpen`, `DialogueClose` | `ev.msg` |
+| `DialogueText` | `ev.msg`, `ev.hash` (FNV-1a da string), `ev.size`; só com mod de seed |
+| `SeedItem` | `ev.item`, `ev.dungeon`; só com mod de seed |
+| `GtOpen` | `ev.a` = cristais, `ev.b` = alvo, `ev.c` = modo; só com mod de seed |
 | `LinkDamage` | `ev.damage`, `ev.health_before` |
 | `SpriteSpawn`, `SpriteKilled` | `ev.slot`, `ev.type` |
 | `ModuleChange` | `ev.module`, `ev.prev` |

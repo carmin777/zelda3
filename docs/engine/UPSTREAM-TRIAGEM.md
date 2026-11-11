@@ -28,10 +28,12 @@ de feature não suja o núcleo.
   opção (`GameChangingBugFixes`), não como padrão.
 
 ### B. Build e portabilidade
-- Já resolvidos na nossa branch: #274 / PR #300 / PR #316 (protótipos C23).
+- Já resolvidos na nossa branch: #274 / PR #300 / PR #316 (protótipos C23);
+  PR #270 (GLES, viewport centralizado e formato de textura — escolhido por
+  `OutputMethod = OpenGL ES`) e PR #301 (DPI no Windows via
+  `SetProcessDPIAware`), trazidos em 10/11/26.
 - #249 (sintaxe em `text_compression.py`), #253, PR #256 (Python mínimo),
-  #226 `nproc` no macOS, #254, #257, #283, #306, #309, PR #313, PR #270
-  (GLES), PR #301 (DPI).
+  #226 `nproc` no macOS, #254, #257, #283, #306, #309, PR #313.
 
 ### C. Tradução — boa parte vira modkit (F4b)
 - **#199 "tradução sem ROM modificada"** e **#281 menus/itens ainda em

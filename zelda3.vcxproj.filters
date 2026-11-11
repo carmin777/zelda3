@@ -202,6 +202,9 @@
     <ClCompile Include="src\mod\events.c">
       <Filter>Zelda</Filter>
     </ClCompile>
+    <ClCompile Include="src\mod\menu.c">
+      <Filter>Zelda</Filter>
+    </ClCompile>
     <ClCompile Include="src\mod\mods.c">
       <Filter>Zelda</Filter>
     </ClCompile>
@@ -427,6 +430,9 @@
       <Filter>Zelda</Filter>
     </ClInclude>
     <ClInclude Include="src\mod\events.h">
+      <Filter>Zelda</Filter>
+    </ClInclude>
+    <ClInclude Include="src\mod\menu.h">
       <Filter>Zelda</Filter>
     </ClInclude>
     <ClInclude Include="src\mod\mods.h">

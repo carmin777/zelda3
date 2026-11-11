@@ -18,7 +18,9 @@
 #include "mod/events.h"
 #include "mod/game_over_text.h"
 #include "mod/hooks.h"
+#include "mod/inverted.h"
 #include "mod/lua_save.h"
+#include "mod/seed_import.h"
 #include "mod/seed_oracle.h"
 #include "nmi.h"
 #include "assets.h"
@@ -423,7 +425,28 @@ void Module1B_SpawnSelect() {  // 828586
   EnableForceBlank();
   EraseTileMaps_normal();
   uint8 bak = which_starting_point;
-  which_starting_point = kLocationMenuStartPos[choice_in_multiselect_box];
+  uint8 choice = choice_in_multiselect_box;
+  if (choice < 3 && ModInverted_Active() &&
+      ModSeedImport_ShouldStartAtExit(choice)) {
+    // z3r AllowStartFromExit ($82:8496): switch straight to overworld mode
+    // with the selected start room so LoadOverworldFromDungeon uses the
+    // room's exit data instead of loading the interior.
+    which_starting_point = kLocationMenuStartPos[choice];
+    dungeon_room_index = dungeon_room_index2 =
+        kStartingPoint_rooms[which_starting_point];
+    main_module_index = 8;
+    submodule_index = 0;
+    subsubmodule_index = 0;
+    death_var4 = 0;
+    death_var5 = 0;
+    flag_update_hud_in_nmi = 1;
+    Hud_SearchForEquippedItem();
+    Hud_Rebuild();
+    Hud_UpdateEquippedItem();
+    which_starting_point = bak;
+    return;
+  }
+  which_starting_point = kLocationMenuStartPos[choice];
   subsubmodule_index = 0;
   LoadDungeonRoomRebuildHUD();
   which_starting_point = bak;
@@ -827,9 +850,21 @@ void Death_Func15(bool count_as_death) {  // 89f50f
       g_ram[0xF449]++;
   }
   if (sram_progress_indicator < 3) {
-    savegame_is_darkworld = 0;
-    if (!link_item_moon_pearl)
-      ForceNonbunnyStatus();
+    // z3r SetDeathWorldChecked: a real pre-Agahnim dungeon death is left
+    // alone when the seed enables the fake-DW bugfix; save&quit still
+    // applies DoWorldFix.
+    bool fix_world = true;
+    const ModSeedZ3rSettings *s = ModSeedImport_Z3rSettings();
+    if (ModSeedImport_Active() && s != NULL &&
+        s->bugfix_pre_aga_dw_dungeon_death && count_as_death &&
+        player_is_indoors && BYTE(cur_palace_index_x2) != 0xff)
+      fix_world = false;
+    if (fix_world) {
+      savegame_is_darkworld = ModInverted_Active() ? 0x40 : 0;
+      if (!link_item_moon_pearl &&
+          !ModInverted_PearlRequired(savegame_is_darkworld))
+        ForceNonbunnyStatus();
+    }
   }
   if (dungeon_room_index == 0)
     player_is_indoors = 0;
@@ -841,7 +876,8 @@ void Death_Func15(bool count_as_death) {  // 89f50f
   death_var4 = link_health_current = kHealthAfterDeath[link_health_capacity >> 3];
   uint8 i = BYTE(cur_palace_index_x2);
   if (i != 0xff)
-    link_keys_earned_per_dungeon[(i == 2 ? 0 : i) >> 1] = link_num_keys;
+    link_keys_earned_per_dungeon[ModSeedImport_GenericKeysActive()
+        ? 0 : (i == 2 ? 0 : i) >> 1] = link_num_keys;
   Sprite_ResetAll();
   if (EmuSeedRomActive()) {
     // JP $89:F58E/$F597 uses $7EF401/$7EF3FF (the US offsets are +4/+4).
@@ -1748,6 +1784,21 @@ void DungeonMap_DrawFloorNumbersByRoom(uint16 pd, uint16 r8) {  // 8ae4f9
   messaging_buf[t+1] = q2 & r8;
 }
 
+static int SeedMapMode(void) {
+  const ModSeedZ3rSettings *s = ModSeedImport_Z3rSettings();
+  return (ModSeedImport_Z3rRulesActive() && s != NULL) ? s->map_mode : 1;
+}
+
+static int SeedCompassMode(void) {
+  const ModSeedZ3rSettings *s = ModSeedImport_Z3rSettings();
+  return (ModSeedImport_Z3rRulesActive() && s != NULL) ? s->compass_mode : 1;
+}
+
+static bool DungeonMap_HasMap(int dungmask) {
+  // z3r MapMode: 0 = layout always visible, 1 = require the map item.
+  return SeedMapMode() == 0 || (link_dungeon_map & dungmask) != 0;
+}
+
 void DungeonMap_DrawDungeonLayout(int pd) {  // 8ae579
   for (int i = 0; i < 5; i++)
     DungeonMap_DrawSingleRowOfRooms(i, ((292 + 128 * i + pd) & 0xfff) >> 1);
@@ -1776,7 +1827,7 @@ void DungeonMap_DrawSingleRowOfRooms(int i, int arg_x) {  // 8ae5bc
     if (r12 != 0xB00 && (r14 & 8) == 0) {
       if (!(r12 & 0x1000)) {
         r12 = 0x400;
-      } else if (link_dungeon_map & dungmask) {
+      } else if (DungeonMap_HasMap(dungmask)) {
         av = (r12 & ~0x1c00) | 0xc00;
         goto write_3;
       } else {
@@ -1785,7 +1836,7 @@ void DungeonMap_DrawSingleRowOfRooms(int i, int arg_x) {  // 8ae5bc
     } else {
       r12 = 0;
     }
-    av = ((link_dungeon_map & dungmask) || (r14 & 8)) ? r12 + r12_org : 0xb00;
+    av = ((DungeonMap_HasMap(dungmask)) || (r14 & 8)) ? r12 + r12_org : 0xb00;
   write_3:
     messaging_buf[arg_x] = av;
 
@@ -1793,7 +1844,7 @@ void DungeonMap_DrawSingleRowOfRooms(int i, int arg_x) {  // 8ae5bc
     if (r12 != 0xB00 && (r14 & 4) == 0) {
       if (!(r12 & 0x1000)) {
         r12 = 0x400;
-      } else if (link_dungeon_map & dungmask) {
+      } else if (DungeonMap_HasMap(dungmask)) {
         av = (r12 & ~0x1c00) | 0xc00;
         goto write_4;
       } else {
@@ -1802,7 +1853,7 @@ void DungeonMap_DrawSingleRowOfRooms(int i, int arg_x) {  // 8ae5bc
     } else {
       r12 = 0;
     }
-    av = ((link_dungeon_map & dungmask) || (r14 & 4)) ? r12 + r12_org : 0xb00;
+    av = ((DungeonMap_HasMap(dungmask)) || (r14 & 4)) ? r12 + r12_org : 0xb00;
   write_4:
     messaging_buf[arg_x + 1] = av;
 
@@ -1810,7 +1861,7 @@ void DungeonMap_DrawSingleRowOfRooms(int i, int arg_x) {  // 8ae5bc
     if (r12 != 0xB00 && (r14 & 2) == 0) {
       if (!(r12 & 0x1000)) {
         r12 = 0x400;
-      } else if (link_dungeon_map & dungmask) {
+      } else if (DungeonMap_HasMap(dungmask)) {
         av = (r12 & ~0x1c00) | 0xc00;
         goto write_5;
       } else {
@@ -1819,7 +1870,7 @@ void DungeonMap_DrawSingleRowOfRooms(int i, int arg_x) {  // 8ae5bc
     } else {
       r12 = 0;
     }
-    av = ((link_dungeon_map & dungmask) || (r14 & 2)) ? r12 + r12_org : 0xb00;
+    av = ((DungeonMap_HasMap(dungmask)) || (r14 & 2)) ? r12 + r12_org : 0xb00;
   write_5:
     messaging_buf[arg_x + 32] = av;
 
@@ -1827,7 +1878,7 @@ void DungeonMap_DrawSingleRowOfRooms(int i, int arg_x) {  // 8ae5bc
     if (r12 != 0xB00 && (r14 & 1) == 0) {
       if (!(r12 & 0x1000)) {
         r12 = 0x400;
-      } else if (link_dungeon_map & dungmask) {
+      } else if (DungeonMap_HasMap(dungmask)) {
         av = (r12 & ~0x1c00) | 0xc00;
         goto write_6;
       } else {
@@ -1836,7 +1887,7 @@ void DungeonMap_DrawSingleRowOfRooms(int i, int arg_x) {  // 8ae5bc
     } else {
       r12 = 0;
     }
-    av = ((link_dungeon_map & dungmask) || (r14 & 1)) ? r12 + r12_org : 0xb00;
+    av = ((DungeonMap_HasMap(dungmask)) || (r14 & 1)) ? r12 + r12_org : 0xb00;
   write_6:
     messaging_buf[arg_x + 33] = av;
   }
@@ -2071,7 +2122,12 @@ void DungeonMap_DrawFloorBlinker() {  // 8aeccf
 
 int DungeonMap_DrawBossIcon(int spr_pos) {  // 8aede4
   int dung = cur_palace_index_x2 >> 1;
-  if (save_dung_info[kDungMap_Tab25[dung]] & 0x800 || !(link_compass & kUpperBitmasks[dung]) || kDungMap_Tab28[dung] < 0)
+  int compass_mode = SeedCompassMode() & 0x0f;
+  if (compass_mode == 0)
+    return spr_pos;
+  if (compass_mode != 2 && !(link_compass & kUpperBitmasks[dung]))
+    return spr_pos;
+  if (save_dung_info[kDungMap_Tab25[dung]] & 0x800 || kDungMap_Tab28[dung] < 0)
     return spr_pos;
   spr_pos = DungeonMap_DrawBossIconByFloor(spr_pos);
   if ((frame_counter & 0xf) >= 10)
@@ -2425,6 +2481,13 @@ void Text_LoadCharacterBuffer() {  // 8ec4e2
     src += TEXTCMD_MULTIBYTE(cmd);
   }
   *dst = 0x7f;
+  if (ModSeedImport_Active() && text_str.ptr != NULL && text_str.size != 0) {
+    uint32 hash = 2166136261u;
+    for (size_t i = 0; i < text_str.size; i++)
+      hash = (hash ^ text_str.ptr[i]) * 16777619u;
+    MOD_EMIT(kModEv_DialogueText, dialogue_message_index, (int)hash,
+             (int)text_str.size);
+  }
   dialogue_msg_read_pos = 0;
 }
 

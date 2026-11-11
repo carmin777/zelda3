@@ -7,6 +7,7 @@
 #include "messaging.h"
 #include "sprite.h"
 #include "mod/events.h"
+#include "mod/inverted.h"
 #include "mod/lua_save.h"
 #include "mod/seed_import.h"
 #include "mod/seed_oracle.h"
@@ -956,6 +957,7 @@ void NameFile_DoTheNaming() {  // 8cda4d
   };
   if (!seed_save)
     memcpy(sram + 0x340, kSramInit_Normal, 60);
+  ModInverted_OnNewSave(sram, 0x500, selectfile_R16, seed_save);
   Intro_FixCksum(sram);
   ZeldaWriteSram();
   // New file fully written. InitializeSaveFile is the same creation path the

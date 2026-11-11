@@ -3,6 +3,7 @@
 #include "zelda_cpu_infra.h"
 #include "variables.h"
 #include "messaging.h"
+#include "mod/seed_import.h"
 #include "mod/seed_oracle.h"
 #include "snes/snes_regs.h"
 #include "snes/ppu.h"
@@ -115,11 +116,19 @@ static void Interrupt_NMI_AudioParts_Locked() {
     // Zelda causes unwanted music change when going in a portal. last_music_control doesn't hold the 
     // song but the last applied effect
   } else if (!ZeldaIsPlayingMusicTrackWithBug(music_control)) {
-    last_music_control = music_control;
-    ZeldaPlayMsuAudioTrack(music_control);
-    if (music_control < 0xf2)
-      music_unk1 = music_control;
-    music_control = 0;
+    const ModSeedZ3rSettings *seed_settings = ModSeedImport_Z3rSettings();
+    if (ModSeedImport_Z3rRulesActive() && seed_settings != NULL &&
+        seed_settings->no_bgm && music_control != 8) {
+      // z3r msu.asm NoBGM: consume the request without sending it to the APU.
+      // Track 8 (the mirror warp) is explicitly exempt in z3r.
+      music_control = 0;
+    } else {
+      last_music_control = music_control;
+      ZeldaPlayMsuAudioTrack(music_control);
+      if (music_control < 0xf2)
+        music_unk1 = music_control;
+      music_control = 0;
+    }
   }
 
   if (sound_effect_ambient == 0) {

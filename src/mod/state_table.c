@@ -1063,6 +1063,7 @@ const StateVar kStateVars[] = {
   { "poly_y1_trig", 0x01FED, 1, 1, false },
   { "polyhedral_buffer", 0x0E800, 1, 256, true },
   { "pots_revealed_in_room", 0x0F580, 2, 256, true },
+  { "previous_overworld_door", 0x15099, 1, 1, false },
   { "primary_water_grass_timer", 0x00356, 1, 1, false },
   { "prizes_arr1", 0x00FC7, 1, 16, true },
   { "push_block_direction", 0x00474, 1, 1, false },
@@ -1337,6 +1338,7 @@ const StateVar kStateVars[] = {
   { "timer_for_mode7_zoom", 0x00637, 1, 1, false },
   { "timer_tagalong_reacquire", 0x002D2, 1, 1, false },
   { "tmp_counter", 0x00FB5, 1, 1, false },
+  { "total_item_counter", 0x0F423, 2, 1, false },
   { "transition_counter", 0x00126, 1, 1, false },
   { "triforce_ctr", 0x01E0C, 2, 1, false },
   { "trigger_special_entrance", 0x004C6, 1, 1, false },
@@ -1439,7 +1441,7 @@ const StateVar kStateVars[] = {
   { "word_7FFD02", 0x1FD02, 2, 1, false },
 };
 
-const unsigned kStateVarCount = 1433;
+const unsigned kStateVarCount = 1434;
 
 const StateVar *StateTable_Find(const char *name) {
   int lo = 0;

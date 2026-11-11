@@ -16,17 +16,18 @@ typedef struct VoxelGlVertex {
   float x, y, z;
   float u, v;
   float shade;
-  float depth;  // scene Y (plus a small bias); used only by the 3D shaders
+  float depth;  // reserved depth bias; the 3D shader uses world x/y/z
 } VoxelGlVertex;
 
 typedef struct VoxelGlCamera {
   float center_x, center_y;
   float width, height;
-  float tilt;
-  float persp;
-  float zscale;
   float yaw;
+  float cos_elev;  // cos of the camera elevation above the horizon
+  float sin_elev;
+  float distance;  // camera distance in world pixels (larger = flatter)
   float zoom;
+  float zscale;    // world height multiplier
 } VoxelGlCamera;
 
 typedef void (*VoxelGlLogFn)(void *user, int level, const char *message);
@@ -48,10 +49,27 @@ bool VoxelGl_UploadAtlas(VoxelGl *gl, const uint8_t *rgba, int width, int height
 
 // Draws triangles with the 3D (perspective) or 2D (screen-space) shader.
 bool VoxelGl_Draw3D(VoxelGl *gl, const VoxelGlVertex *vertices, int count,
-                    const VoxelGlCamera *camera);
+                    const VoxelGlCamera *camera, float offset_x,
+                    float offset_y);
+// Copies the world framebuffer to the output with an optional tilt-shift
+// blur. The HUD/2D pass runs afterwards, so it stays sharp.
+bool VoxelGl_CompositeWorld(VoxelGl *gl, float strength);
+// Draws a screen-space panel into the world target, before the 3D pass.
+bool VoxelGl_DrawBackdrop(VoxelGl *gl, const VoxelGlVertex *vertices,
+                          int count);
+// Adds/subtracts a translucent screen-space panel over the finished world.
+bool VoxelGl_DrawOverlay(VoxelGl *gl, const VoxelGlVertex *vertices, int count,
+                         bool subtract, bool half);
 bool VoxelGl_Draw2D(VoxelGl *gl, const VoxelGlVertex *vertices, int count);
-// Draws the shadow geometry with alpha blending. Must run after the ground and
-// columns and before the sprite cards; |strength| is the shadow alpha (0..1).
+// Renders one shadow-map pass from the sun. Both meshes are casters. The
+// main 3D draw samples the result; |strength| 0 disables the pass.
+bool VoxelGl_RenderShadowMap(VoxelGl *gl, const VoxelGlVertex *terrain,
+                             int terrain_count, const VoxelGlVertex *sprites,
+                             int sprite_count, const VoxelGlCamera *camera,
+                             float light_x, float light_y, float light_z,
+                             float strength, float terrain_offset_x,
+                             float terrain_offset_y);
+// Legacy ground-shadow quads (kept as a fallback for other consumers).
 bool VoxelGl_DrawShadows(VoxelGl *gl, const VoxelGlVertex *vertices, int count,
                          const VoxelGlCamera *camera, float strength);
 

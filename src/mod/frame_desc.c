@@ -511,6 +511,95 @@ static void BuildOverworldLayer(FrameDescTileLayer *tl, const FrameDesc *desc,
   }
 }
 
+// The room layer is the whole current dungeon room or overworld screen. It
+// exists so a tilted camera can show the world outside the SNES viewport
+// without reading neighboring rooms/screens.
+static void BuildRoomLayer(FrameDesc *desc, int layer) {
+  FrameDescTileLayer *tl = &desc->semantics.layer[layer];
+  FrameDescRoomLayer *room = &desc->semantics.room_layer[layer];
+  memset(room, 0, sizeof(*room));
+  room->present = tl->present;
+  room->origin_tile_x = tl->origin_tile_x;
+  room->origin_tile_y = tl->origin_tile_y;
+  if (!tl->present)
+    return;
+
+  const int screen_org_x = (int)desc->ppu.bg[layer].hscroll >> 3;
+  const int screen_org_y = (int)desc->ppu.bg[layer].vscroll >> 3;
+  room->screen_origin_tile_x = (int16)screen_org_x;
+  room->screen_origin_tile_y = (int16)screen_org_y;
+
+  if (desc->semantics.indoors) {
+    room->source = layer == 0 ? kFrameDescLayer_DungeonBg1
+                              : kFrameDescLayer_DungeonBg2;
+    // A one-screen room lives in one 32x32 quadrant of the 64x64 attr table;
+    // a 2x2-screen room fills the whole table. The quadrant is the one under
+    // the logical screen origin, not the pane origin (which includes the
+    // widescreen side space).
+    int full_x = quadrant_fullsize_x != 0;
+    int full_y = quadrant_fullsize_y != 0;
+    room->cols = (uint8)(full_x ? 64 : 32);
+    room->rows = (uint8)(full_y ? 64 : 32);
+    room->base_tile_x = (int16)(full_x ? 0 : (screen_org_x & ~31));
+    room->base_tile_y = (int16)(full_y ? 0 : (screen_org_y & ~31));
+    const uint8 *table = layer == 0 ? dung_bg1_attr_table
+                                    : dung_bg2_attr_table;
+    for (int r = 0; r < room->rows; r++) {
+      for (int c = 0; c < room->cols; c++) {
+        int tx = room->base_tile_x + c;
+        int ty = room->base_tile_y + r;
+        int idx = r * kFrameDesc_MaxRoomDim + c;
+        uint8 attr = table[(ty & 63) * 64 + (tx & 63)];
+        room->valid[idx] = 1;
+        room->attr[idx] = attr;
+        room->raw[idx] = attr;
+      }
+    }
+  } else {
+    room->source = layer == 0 ? kFrameDescLayer_OverworldBg1
+                              : kFrameDescLayer_Overworld;
+    // The overworld keeps 64x64 Map16 cells (128x128 8x8 tiles) in RAM. Draw
+    // that whole area, not the 32x32 window under the viewport. Center the
+    // 128-tile window on the logical screen instead of anchoring it to the
+    // wrapped Map16 origin: at an area edge (Lost Woods) the old window ended
+    // at the viewport boundary and left the widescreen side empty. The table
+    // lookup below wraps with overworld_offset_mask_*, so the same map data
+    // is sampled on both sides.
+    room->base_tile_x = (int16)(screen_org_x - 64);
+    room->base_tile_y = (int16)(screen_org_y - 64);
+    room->cols = 128;
+    room->rows = 128;
+    const uint16 *map = layer == 0 ? dung_bg1 : overworld_tileattr;
+    for (int r = 0; r < room->rows; r++) {
+      int world_y = (room->base_tile_y + r) * 8;
+      for (int c = 0; c < room->cols; c++) {
+        int idx = r * kFrameDesc_MaxRoomDim + c;
+        int tile_x = room->base_tile_x + c;
+        int map16_x = (((tile_x - overworld_offset_base_x) &
+                        overworld_offset_mask_x) >> 1);
+        int map16_y = (((world_y - overworld_offset_base_y) &
+                        overworld_offset_mask_y) >> 4);
+        int map16_idx = (map16_y << 6) + map16_x;
+        uint16 raw = 0;
+        if (map16_idx >= 0 && map16_idx < 0x1000)
+          raw = map[map16_idx];
+        uint8 attr;
+        if (layer == 1) {
+          attr = raw < 0xea8
+              ? Overworld_GetTileAttributeAtLocation((uint16)tile_x,
+                                                     (uint16)world_y)
+              : 0;
+        } else {
+          attr = raw < 0xea8 ? kSomeTileAttr[raw] : 0;
+        }
+        room->valid[idx] = 1;
+        room->raw[idx] = raw;
+        room->attr[idx] = attr;
+      }
+    }
+  }
+}
+
 static void BuildSemantics(FrameDesc *desc) {
   const FrameDescPpuState *ppu = &desc->ppu;
   FrameDescSemantics *sem = &desc->semantics;
@@ -564,6 +653,7 @@ static void BuildSemantics(FrameDesc *desc) {
         tl->valid[idx] = sx + 8 > left_clip && sx < right_clip;
       }
     }
+    BuildRoomLayer(desc, layer);
   }
 }
 

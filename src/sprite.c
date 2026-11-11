@@ -17,6 +17,7 @@
 #include "mod/hooks.h"
 #include "mod/shared_world.h"
 #include "mod/frame_desc.h"
+#include "mod/seed_import.h"
 #include "mod/seed_oracle.h"
 #include "zelda_cpu_infra.h"
 static const uint16 kOamGetBufferPos_Tab0[6] = {0x171, 0x201, 0x31, 0xc1, 0x141, 0x1d1};
@@ -2670,6 +2671,16 @@ bool Sprite_ReturnIfLiftedPermissive(int k) {  // 86f257
 }
 
 uint8 Sprite_CheckDamageFromLink(int k) {  // 86f2b4
+  // z3r $86F2C8 GoalItemGanonCheck: until the goal condition is met, Ganon
+  // cannot be damaged by Link.
+  if (sprite_type[k] == 0xd6 && ModSeedImport_Z3rRulesActive()) {
+    bool vulnerable = ModSeedImport_GanonVulnerable();
+    MOD_EMIT(kModEv_GanonCheck, vulnerable ? 0 : 1,
+             ModSeedImport_CrystalCount(), 0);
+    if (!vulnerable)
+      return 0;
+  }
+
   if (sprite_hit_timer[k] & 0x80 || sprite_floor[k] != link_is_on_lower_level || player_oam_y_offset == 0x80)
     return 0;
 

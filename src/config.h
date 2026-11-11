@@ -42,8 +42,12 @@ enum {
   kKeys_VoxelCameraReset,
   kKeys_VoxelShadows,
   kKeys_VoxelLighting,
+  kKeys_VoxelLevelLow,
+  kKeys_VoxelLevelMid,
+  kKeys_VoxelLevelHigh,
   kKeys_VolumeUp,
   kKeys_VolumeDown,
+  kKeys_OptionsMenu,
   kKeys_Total,
 };
 
@@ -74,12 +78,21 @@ typedef struct Config {
   bool no_sprite_limits;
   bool frame_description;
   const char *render_plugin;
+  bool render_plugin_enabled;
   bool display_perf_title;
   uint8 enable_msu;
   bool resume_msu;
   bool disable_frame_delay;
   uint8 msuvolume;
+  bool volume_set;
+  uint8 volume;
   uint32 features0;
+  // Extra tokens from ExtendedAspectRatio that the options menu must keep
+  // when it rewrites the value.
+  uint8 aspect_ratio_flags;
+  const char *mods_enable_overrides;
+  const char *mods_disable_overrides;
+  const char *mods_priority_overrides;
   bool mods_enabled;
   const char *mods_directory;
   uint64 lua_instruction_limit;
@@ -137,8 +150,30 @@ enum {
 
 extern Config g_config;
 
+enum {
+  kAspectFlag_UnchangedSprites = 1,
+  kAspectFlag_NoVisualFixes = 2,
+};
+
 void ParseConfigFile(const char *filename);
 int FindCmdForSdlKey(SDL_Keycode code, SDL_Keymod mod);
 int FindCmdForSdlKey2(SDL_Keycode code, SDL_Keymod mod);
 int FindCmdForGamepadButton(int button, uint32 modifiers);
 int FindCmdForGamepadButton2(int button, uint32 modifiers);
+
+// Key rebinding and serialization used by the in-game options menu.
+uint16 Config_KeyFromSdl(SDL_Keycode code, SDL_Keymod mod);
+const char *Config_FormatKey(uint16 key, char *buf, size_t size);
+uint16 Config_GetCommandKey(int cmd);
+bool Config_SetCommandKey(int cmd, uint16 key);
+int Config_GetCommandGamepad(int cmd);
+bool Config_SetCommandGamepad(int cmd, int button);
+const char *Config_GamepadButtonName(int button);
+int Config_GamepadButtonFromName(const char *name);
+void Config_FormatControls(char *out, size_t size);
+void Config_FormatGamepadControls(char *out, size_t size);
+
+// Per-mod overrides from [Mods] EnableOverrides/DisableOverrides/PriorityOverrides.
+bool Config_IsModDisableOverride(const char *id);
+bool Config_IsModEnableOverride(const char *id);
+bool Config_GetModPriorityOverride(const char *id, int *priority);

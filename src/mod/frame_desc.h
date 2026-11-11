@@ -17,7 +17,7 @@
 // Public, stable layout. Plugins include render_plugin.h, which includes this
 // header; it deliberately does not depend on the internal Ppu struct or SDL.
 enum {
-  kFrameDescVersion = 3,
+  kFrameDescVersion = 4,
 
   // Worst case for the draw loop: two HDMA channels writing 4 bytes per line,
   // plus the four BG3 scroll writes at line 128.
@@ -30,6 +30,12 @@ enum {
   kFrameDesc_MaxTileCols = (256 + kPpuExtraLeftRight * 2) / 8,
   kFrameDesc_MaxTileRows = 240 / 8,
   kFrameDesc_MaxTiles = kFrameDesc_MaxTileCols * kFrameDesc_MaxTileRows,
+
+  // A dungeon room can be up to 2x2 screens (64x64 8x8 tiles); the overworld
+  // area is 64x64 Map16 cells (128x128 8x8 tiles). The layer stores 128x128
+  // entries and the consumer uses cols/rows.
+  kFrameDesc_MaxRoomDim = 128,
+  kFrameDesc_MaxRoomTiles = kFrameDesc_MaxRoomDim * kFrameDesc_MaxRoomDim,
 
   // SharedWorld split-screen draws two complete panes, side by side.
   kFrameDesc_MaxPanes = 2,
@@ -176,6 +182,28 @@ typedef struct FrameDescTileLayer {
   uint16 raw[kFrameDesc_MaxTiles];    // dungeon byte or overworld Map16 word
 } FrameDescTileLayer;
 
+// Whole current room/area, not just the part inside the SNES viewport.
+// Dungeons expose the loaded room (up to 2x2 screens); the overworld exposes
+// the loaded 64x64-Map16 area (128x128 8x8 tiles). Neighboring rooms/areas are
+// never included. |origin_tile_x/y| is the room tile visible at pane
+// column/row 0; |base_tile_x/y| is where this layer's cols x rows window
+// starts inside the source table. Consumers draw tile (r,c) at
+// ((base_x + c) - origin_x).
+typedef struct FrameDescRoomLayer {
+  bool present;
+  uint8 source;           // FrameDescLayerSource
+  uint8 cols, rows;       // 32..64, dense window starting at base_tile_x/y
+  int16 origin_tile_x;    // room tile at pane column 0
+  int16 origin_tile_y;    // room tile at pane row 0
+  int16 screen_origin_tile_x;  // room tile at logical screen column 0
+  int16 screen_origin_tile_y;  // room tile at logical screen row 0
+  int16 base_tile_x;      // room/source-table tile at local column 0
+  int16 base_tile_y;      // room/source-table tile at local row 0
+  uint8 valid[kFrameDesc_MaxRoomTiles];
+  uint8 attr[kFrameDesc_MaxRoomTiles];
+  uint16 raw[kFrameDesc_MaxRoomTiles];
+} FrameDescRoomLayer;
+
 typedef struct FrameDescSemantics {
   bool indoors;
   bool mode7;
@@ -186,6 +214,7 @@ typedef struct FrameDescSemantics {
   int16 link_x, link_y, link_z;
   int16 camera_x, camera_y;
   FrameDescTileLayer layer[2];  // BG1 and BG2, indexed by PPU layer
+  FrameDescRoomLayer room_layer[2];  // same layers, whole current room
 } FrameDescSemantics;
 
 // Where this description belongs in the output image. pane_x/pane_y are in

@@ -349,8 +349,8 @@ static void ZeldaRunPolyLoop() {
 void ZeldaRunFrameInternal(uint16 input, int run_what) {
   uint8 prev_module = 0;
   uint8 prev_world = 0;
-  bool track_module = (g_mod_event_mask & (1u << kModEv_ModuleChange)) != 0;
-  bool track_world = (g_mod_event_mask & (1u << kModEv_WorldChange)) != 0;
+  bool track_module = (g_mod_event_mask & (1ull << kModEv_ModuleChange)) != 0;
+  bool track_world = (g_mod_event_mask & (1ull << kModEv_WorldChange)) != 0;
   if (track_module)
     prev_module = main_module_index;
   if (track_world)

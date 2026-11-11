@@ -1,0 +1,6 @@
+# Open and close the start menu so Hud_Rebuild runs after the fixture values.
+1 -
+10 Start
+12 -
+30 Start
+32 -
